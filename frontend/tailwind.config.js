@@ -6,7 +6,8 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        sans: ['Poppins', 'sans-serif'],
+        sans: ['Aeonik', 'system-ui', 'sans-serif'],
+        display: ['"General Sans"', 'Aeonik', 'system-ui', 'sans-serif'],
       },
     },
   },

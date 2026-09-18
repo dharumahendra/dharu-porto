@@ -49,6 +49,20 @@ body{
 
 
 
+<script>
+    const bgtParams = new URLSearchParams(window.location.search);
+    const bgTextEl = document.getElementById('bg-text');
+    if (bgTextEl && bgtParams.has('bgText')) {
+      bgTextEl.textContent = bgtParams.get('bgText');
+    }
+  </script>
+<script>
+    const bgtParams = new URLSearchParams(window.location.search);
+    const bgTextEl = document.getElementById('bg-text');
+    if (bgTextEl && bgtParams.has('bgText')) {
+      bgTextEl.textContent = bgtParams.get('bgText');
+    }
+  </script>
 <div id="dof"></div>
 <canvas id="gl"></canvas>
 <div id="grain"></div>
@@ -66,6 +80,14 @@ body{
 <script>
 (function(){
 "use strict";
+const params = new URLSearchParams(window.location.search);
+const pTitle = params.get('title') || "Dharu's Portfolio.";
+const pDate = params.get('date') || "Feb 14, 2026";
+const pStudio = params.get('studio') || "Nocturne Studio.";
+const pAuthor1 = params.get('author1') || "By Nocturne Studio";
+const pAuthor2 = params.get('author2') || "Ilya Marchetti";
+const pAuthor3 = params.get('author3') || "Dara Okonkwo";
+
 const T = THREE;
 const TW = 1400, TH = 1932;               // 0.7246, same proportion as before
 const clamp = (v,a,b)=> v<a?a:(v>b?b:v);
@@ -132,13 +154,13 @@ function drawGlass(ctx){
 
   ctx.font='500 106px "Inter Tight", Inter, sans-serif';
   ctx.fillStyle='rgba(255,255,255,.52)';
-  ctx.fillText("Dharu's Portfolio.", M, 392);
-  ctx.fillText('Feb 14, 2026',        M, 518);
+  ctx.fillText(pTitle, M, 392);
+  ctx.fillText(pDate, M, 518);
   ctx.font='600 110px "Inter Tight", Inter, sans-serif'; ctx.fillStyle='#ffffff';
-  ctx.fillText('Nocturne Studio.', M, 664);
+  ctx.fillText(pStudio, M, 664);
 
   ctx.font='600 34px Inter, sans-serif'; ctx.fillStyle='rgba(255,255,255,.90)';
-  ['By Nocturne Studio','Ilya Marchetti','Dara Okonkwo'].forEach((s,i)=>
+  [pAuthor1, pAuthor2, pAuthor3].forEach((s,i)=>
     ctx.fillText(s, M+4, 752+i*45));
 
   const px=592, py=1158;
@@ -460,6 +482,11 @@ let intro = 0;
 
 function frame(){
   requestAnimationFrame(frame);
+  // Parked while this card sits outside the host page's viewport. The scene
+  // stays fully loaded and warm - only the per-frame GPU work stops - so
+  // scrolling it back into view resumes instantly instead of booting.
+  // Driven by the host via postMessage; see the listener at end of file.
+  if (window.__paperPaused) { clock.getDelta(); return; }
   const dt = Math.min(clock.getDelta(), 0.05);
   const t  = clock.elapsedTime;
   uni.uTime.value = REDUCED ? 2.4 : t;
@@ -544,5 +571,47 @@ window.__sheet = {group, mat, uni, renderer, scene, camera, mesh,
   state:()=>({intro, dragYaw, dragPitch, hover, quad}),
   hit:(x,y)=>inQuad(x,y),
   spin:(y)=>{ dragYaw=y; release=1e9; }};
+})();
+</script>
+
+
+<script>
+/* Render-gate driven by the host page.
+   The host owns an IntersectionObserver on this iframe's container and posts
+   {type:"paper:visibility"} as the card enters or leaves the viewport. Done
+   that way rather than observing window.frameElement from in here, because an
+   IntersectionObserver can only observe targets in its own document. */
+(function(){
+  var offscreen = false;
+  function sync(){ window.__paperPaused = offscreen || document.hidden; }
+  sync();
+  window.addEventListener("message", function(ev){
+    if (ev.origin !== window.location.origin) return;
+    if (ev.source !== window.parent) return;
+    var d = ev.data;
+    if (!d || d.type !== "paper:visibility") return;
+    offscreen = !d.visible;
+    sync();
+  });
+  document.addEventListener("visibilitychange", sync);
+})();
+
+/* Scroll pass-through.
+   Wheel events over an iframe are delivered to the iframe's document, so the
+   host page's scroller (Lenis) never sees them and the page stops scrolling
+   while the cursor is over the card. Forward them to the host, which re-emits
+   them on the iframe's container so they bubble into Lenis as usual. */
+(function(){
+  if (window.parent === window) return;
+  window.addEventListener("wheel", function(e){
+    if (e.ctrlKey) return; // leave pinch-zoom to the browser
+    e.preventDefault();
+    window.parent.postMessage({
+      type: "paper:wheel",
+      deltaX: e.deltaX,
+      deltaY: e.deltaY,
+      deltaMode: e.deltaMode
+    }, window.location.origin);
+  }, { passive: false });
 })();
 </script>

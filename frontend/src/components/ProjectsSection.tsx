@@ -1,9 +1,24 @@
-import { motion, useMotionValue, useTransform } from 'framer-motion';
+﻿import { motion, useMotionValue, useTransform } from 'framer-motion';
 import { useLenis } from 'lenis/react';
 import { Navbar } from './Navbar';
-const ELEMEN_HERO = "/engine.png";
+// 320px source for a 120px-max element. The original engine.png is 2048x2048
+// (538 KB), roughly 290x more pixels than are ever displayed.
+const ELEMEN_HERO = "/engine-320.png";
 
-export function ProjectsSection() {
+interface ProjectsSectionProps {
+  /**
+   * Navbar is fixed-position, so only the section at the top of a route may
+   * render it — a second instance would stack an identical overlay on the first.
+   */
+  showNavbar?: boolean;
+  /** The scroll hint only makes sense while the section is the first thing on screen. */
+  showScrollHint?: boolean;
+}
+
+export function ProjectsSection({
+  showNavbar = true,
+  showScrollHint = true
+}: ProjectsSectionProps = {}) {
   // useScroll() always reads window.scrollY = 0 because Lenis scrolls its own container.
   // Fix: use useLenis to read scroll from the actual Lenis container.
   const scrollY = useMotionValue(0);
@@ -14,7 +29,7 @@ export function ProjectsSection() {
   return (
     <section className="relative w-full min-h-screen overflow-x-hidden bg-[#F5FAFF] flex flex-col">
       {/* Navigation */}
-      <Navbar />
+      {showNavbar && <Navbar />}
 
       {/* Removed flex-1 & overflow-hidden so content can push the section taller than the viewport, enabling Lenis scroll */}
       <div className="relative flex flex-col justify-start overflow-x-hidden pb-8 sm:pb-10">
@@ -28,7 +43,7 @@ export function ProjectsSection() {
               {/* Layer 1: projects  */}
               <h1
                 aria-hidden="true"
-                className="-ml-[0.06em] pointer-events-none select-none font-semibold m-0 whitespace-nowrap font-sans leading-none text-[#10171c] text-[30vw] sm:text-[28vw] lg:text-[30vw] tracking-[-0.02em]">
+                className="-ml-[0.06em] pointer-events-none select-none font-semibold m-0 whitespace-nowrap font-display leading-none text-[#10171c] text-[30vw] sm:text-[28vw] lg:text-[30vw] tracking-[-0.02em]">
                 crafts
               </h1>
 
@@ -43,6 +58,9 @@ export function ProjectsSection() {
                 <img
                   src={ELEMEN_HERO}
                   alt="Hero Element Box"
+                  width={320}
+                  height={320}
+                  decoding="async"
                   className="w-full h-auto" />
               </motion.div>
 
@@ -57,6 +75,9 @@ export function ProjectsSection() {
                 <img
                   src={ELEMEN_HERO}
                   alt="Hero Element Box 2"
+                  width={320}
+                  height={320}
+                  decoding="async"
                   className="w-full h-auto" />
               </motion.div>
             </div>
@@ -72,12 +93,12 @@ export function ProjectsSection() {
           </div>
 
           {/* Scroll Indicator */}
-          <motion.div 
+          {showScrollHint && <motion.div
             style={{ opacity: scrollOpacity }}
             className="px-6 sm:px-10 lg:px-14 pt-8 md:pt-0 md:absolute md:bottom-2 md:left-0 z-30"
           >
             <span className="text-sm sm:text-xl md:text-3xl font-bold font-sans text-[#9aa6ad]">Scroll</span>
-          </motion.div>
+          </motion.div>}
 
         </div>
 

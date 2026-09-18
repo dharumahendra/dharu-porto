@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Liquid — kaca bening yang mengikuti kursor</title>
+<style>
+  * { margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #F5FAFF; }
+  /* touch-action: none keeps a drag on mobile from scrolling the page instead
+     of stirring the fluid. */
+  canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+  .hint {
+    position: fixed; left: 50%; bottom: 30px; transform: translateX(-50%);
+    font: 500 13px/1.4 ui-sans-serif, system-ui, -apple-system, sans-serif;
+    color: #8b98a2; letter-spacing: 0.01em; pointer-events: none;
+    transition: opacity .7s ease;
+  }
+  .hint.gone { opacity: 0; }
+  .fallback { padding: 24px; font: 15px/1.5 ui-sans-serif, system-ui, sans-serif; color: #10171c; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<p class="hint" id="hint">Gerakkan kursor — tanpa klik</p>
+<script>
+// ---------------------------------------------------------------------------
+// Liquid that follows the pointer.
+//
+// Two passes, ping-ponged through float FBOs:
+//   sim   — Navier-Stokes on a half-resolution grid. RGBA holds
+//           .xy velocity, .z pressure, .w thickness of liquid.
+//   glass — reads that grid as a height field and shades it as clear water
+//           over the page behind it: real refraction of the background
+//           texture, Beer-Lambert absorption, caustics, spec and fresnel.
+//
+// The background is a 2D canvas uploaded as a texture, which is what makes
+// genuine refraction possible here — the shader can sample what is behind the
+// liquid. (A WebGL overlay sitting on top of live DOM cannot do that; it only
+// gets alpha compositing.)
+// ---------------------------------------------------------------------------
+
+// --- state first: let/const have a temporal dead zone, and the functions
+// below close over all of it. ---
+let W = 0, H = 0;          // display resolution, device px
+let SW = 0, SH = 0;        // simulation resolution, device px
+let frame = 0;
+let simA = null, simB = null;
+let bgTex = null;
+let started = performance.now();
+let userMoved = false;
+
+// Pointer in simulation pixels. `moved` is per-frame: with no movement there
+// is no injection at all, so a resting cursor does not grow a blob.
+const ptr = { x: 0, y: 0, px: 0, py: 0, moved: false };
+
+const canvas = document.getElementById('c');
+const hint = document.getElementById('hint');
+const gl = canvas.getContext('webgl2', { alpha: false, antialias: false });
+
+if (!gl) {
+  document.body.innerHTML =
+    '<div class="fallback"><h2>WebGL 2 tidak tersedia</h2>' +
+    '<p>Efek ini butuh WebGL 2 (Chrome 56+, Firefox 51+, Safari 15+).</p></div>';
+  throw new Error('WebGL2 not supported');
+}
+// Float render targets. Some drivers expose RGBA16F without advertising this,
+// so a null result is not fatal — the FBO check below is the real test.
+gl.getExtension('EXT_color_buffer_float');
+
+// --- shaders -----------------------------------------------------------
+// Sources start flush against the backtick: `#version` must be the very first
+// character of the string or the compiler rejects it.
+const VERT = `#version 300 es
+in vec2 pos;
+void main(){ gl_Position = vec4(pos, 0.0, 1.0); }`;
+
+const SIM_FRAG = `#version 300 es
+precision highp float;
+out vec4 fragColor;
+
+uniform sampler2D uSim;
+uniform vec2  uRes;          // simulation resolution
+uniform int   uFrame;
+uniform vec3  uPointer;      // xy = position this frame, z = injecting
+uniform vec2  uPointerPrev;  // position last frame
+uniform vec2  uPointerVel;
+
+#define DT     0.15          // time step [0.05 - 0.3]
+#define K      0.2           // pressure correction strength
+#define NU     0.30          // viscosity: low = water, high = syrup
+#define KAPPA  0.05          // how fast thickness diffuses
+#define VORT   0.045         // vorticity confinement: keeps small curls alive
+#define BRUSH  26.0          // brush radius, simulation px
+#define DECAY  0.985         // thickness left per frame — sets trail length
+
+#define T(p) texture(uSim, (p) / uRes)
+
+// Distance to the segment the pointer travelled this frame. Injecting along
+// the segment instead of at a point is what keeps a fast flick continuous
+// rather than a dotted line of separate blobs.
+float segDist(vec2 p, vec2 a, vec2 b){
+  vec2 pa = p - a, ba = b - a;
+  float t = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-4), 0.0, 1.0);
+  return length(pa - ba * t);
+}
+
+float curlAt(vec2 q){
+  return (T(q + vec2(1.0, 0.0)).y - T(q - vec2(1.0, 0.0)).y) * 0.5
+       - (T(q + vec2(0.0, 1.0)).x - T(q - vec2(0.0, 1.0)).x) * 0.5;
+}
+
+void main(){
+  vec2 p = gl_FragCoord.xy;
+
+  // Clear start. Pressure sits at 1.0, everything else at rest.
+  if (uFrame < 4) { fragColor = vec4(0.0, 0.0, 1.0, 0.0); return; }
+
+  vec4 c = T(p);
+  vec4 n = T(p + vec2(0.0, 1.0));
+  vec4 e = T(p + vec2(1.0, 0.0));
+  vec4 s = T(p - vec2(0.0, 1.0));
+  vec4 w = T(p - vec2(1.0, 0.0));
+
+  vec4 lap = n + e + s + w - 4.0 * c;
+  vec4 dx  = (e - w) * 0.5;
+  vec4 dy  = (n - s) * 0.5;
+  float div = dx.x + dy.y;
+
+  // Pressure advance, then semi-Lagrangian advection (backward trace, so it
+  // is unconditionally stable), then diffusion, then pressure projection —
+  // the projection is what enforces incompressibility and makes the motion
+  // read as liquid rather than as spreading paint.
+  c.z  -= DT * (dx.z * c.x + dy.z * c.y + div * c.z);
+  c.xyw = T(p - DT * c.xy).xyw;
+  c.xyw += DT * vec3(NU, NU, KAPPA) * lap.xyw;
+  c.xy -= K * vec2(dx.z, dy.z);
+
+  // Vorticity confinement: the grid bleeds angular momentum out of small
+  // eddies every step, and this puts it back, which is where the curling
+  // behind a stroke comes from.
+  float cc = curlAt(p);
+  vec2 eta = vec2(
+    abs(curlAt(p + vec2(1.0, 0.0))) - abs(curlAt(p - vec2(1.0, 0.0))),
+    abs(curlAt(p + vec2(0.0, 1.0))) - abs(curlAt(p - vec2(0.0, 1.0)))
+  );
+  eta = normalize(eta + vec2(1e-5));
+  c.xy += DT * VORT * vec2(eta.y, -eta.x) * cc;
+
+  // Pointer injection. Clamped on both sides of the wire: one huge delta (a
+  // flick, or the first frame after the cursor re-enters) is enough to blow
+  // the velocity field up into NaN, which then spreads over the whole grid.
+  if (uPointer.z > 0.0) {
+    vec2 vel = clamp(uPointerVel, vec2(-50.0), vec2(50.0));
+    float d = segDist(p, uPointerPrev, uPointer.xy);
+    float infl = exp(-(d * d) / (BRUSH * BRUSH));
+    float speed = min(length(vel), 50.0);
+    c.xy += DT * infl * vel * 1.7;
+    // A faster stroke lays down more liquid, so a flick reads as a thicker
+    // pour than a drift.
+    c.w  += DT * infl * (0.35 + speed * 0.07);
+  }
+
+  // Multiplicative decay, never subtractive: it scales proportionally, so the
+  // trail keeps its shape as it fades instead of flat-topping and then
+  // snapping to zero.
+  c.w  *= DECAY;
+  c.xy *= 0.995;
+
+  c = clamp(c, vec4(-6.0, -6.0, 0.5, 0.0), vec4(6.0, 6.0, 3.0, 6.0));
+
+  // No-slip edges.
+  if (p.x < 1.0 || p.y < 1.0 || uRes.x - p.x < 1.0 || uRes.y - p.y < 1.0) {
+    c.xyw *= 0.0;
+  }
+
+  // Last-resort guard: one NaN in a feedback buffer is permanent.
+  if (any(isnan(c))) c = vec4(0.0, 0.0, 1.0, 0.0);
+
+  fragColor = c;
+}`;
+
+const GLASS_FRAG = `#version 300 es
+precision highp float;
+out vec4 fragColor;
+
+uniform sampler2D uSim;
+uniform sampler2D uBg;
+uniform vec2 uRes;      // display resolution
+uniform vec2 uSimRes;   // simulation resolution
+
+// Per-unit-thickness absorption. Red is absorbed an order of magnitude faster
+// than blue, which is the entire reason deep water looks cyan — the tint is
+// not pigment, it is what is left after the red is gone.
+const vec3 ABSORB = vec3(0.62, 0.15, 0.07);
+// Peak refraction offset, in screen widths. Past ~0.03 the background tears
+// instead of bending.
+const float REFRACT = 0.020;
+// Turns the thickness gradient into a surface slope.
+const float SLOPE = 11.0;
+
+float thick(vec2 uv){ return texture(uSim, uv).w; }
+
+void main(){
+  vec2 uv = gl_FragCoord.xy / uRes;
+  vec2 texel = 1.0 / uSimRes;
+
+  float h  = thick(uv);
+  float hl = thick(uv - vec2(texel.x, 0.0));
+  float hr = thick(uv + vec2(texel.x, 0.0));
+  float hd = thick(uv - vec2(0.0, texel.y));
+  float hu = thick(uv + vec2(0.0, texel.y));
+
+  // Thickness as a height field gives the surface normal.
+  vec2 grad = vec2(hr - hl, hu - hd);
+  vec3 nrm = normalize(vec3(-grad * SLOPE, 1.0));
+
+  // Fades the whole treatment in where there is actually liquid, so the dry
+  // page comes through completely untouched rather than slightly hazed.
+  float body = smoothstep(0.004, 0.22, h);
+
+  // Refraction. The surface slope bends the view, so the page behind shifts —
+  // and each channel bends by a slightly different amount, which is the
+  // dispersion that separates glass from a grey overlay.
+  vec2 off = nrm.xy * REFRACT * body;
+  vec3 col;
+  col.r = texture(uBg, uv + off * 1.09).r;
+  col.g = texture(uBg, uv + off).g;
+  col.b = texture(uBg, uv + off * 0.91).b;
+
+  // Beer-Lambert: colour comes from how much of the background survives the
+  // crossing, not from painting a tint on top.
+  col *= exp(-ABSORB * h * 1.3);
+
+  // Caustics. Where the surface is locally concave it focuses light into the
+  // bright threads that run along a water edge.
+  float lap = hl + hr + hu + hd - 4.0 * h;
+  col += vec3(0.5, 0.78, 0.95) * max(-lap, 0.0) * 1.6 * body;
+
+  vec3 L = normalize(vec3(-0.35, 0.55, 0.75));
+  vec3 V = vec3(0.0, 0.0, 1.0);
+  vec3 Hv = normalize(L + V);
+  float spec = pow(max(dot(nrm, Hv), 0.0), 90.0);
+  float fres = pow(1.0 - max(dot(nrm, V), 0.0), 3.0);
+
+  col += vec3(1.0) * spec * 1.15 * body;
+  col += vec3(0.78, 0.9, 1.0) * fres * 0.22 * body;
+
+  fragColor = vec4(col, 1.0);
+}`;
+
+// --- gl helpers ---------------------------------------------------------
+function createShader(type, src) {
+  const sh = gl.createShader(type);
+  gl.shaderSource(sh, src);
+  gl.compileShader(sh);
+  if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+    console.error('[liquid] shader compile failed:', gl.getShaderInfoLog(sh));
+  }
+  return sh;
+}
+
+function createProgram(vsSrc, fsSrc) {
+  const prog = gl.createProgram();
+  gl.attachShader(prog, createShader(gl.VERTEX_SHADER, vsSrc));
+  gl.attachShader(prog, createShader(gl.FRAGMENT_SHADER, fsSrc));
+  gl.bindAttribLocation(prog, 0, 'pos');
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+    console.error('[liquid] link failed:', gl.getProgramInfoLog(prog));
+  }
+  return prog;
+}
+
+// RGBA16F + HALF_FLOAT, never RGBA32F: 32-bit render targets fail silently on
+// SwiftShader and plenty of mobile GPUs — the framebuffer reports complete and
+// then renders nothing. 16 bits is well past what this grid needs.
+function createFBO(w, h) {
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.HALF_FLOAT, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  const fbo = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+  if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
+    console.error('[liquid] FBO incomplete');
+  }
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  return { fbo, tex };
+}
+
+const progSim = createProgram(VERT, SIM_FRAG);
+const progGlass = createProgram(VERT, GLASS_FRAG);
+
+const uSim = {
+  sim: gl.getUniformLocation(progSim, 'uSim'),
+  res: gl.getUniformLocation(progSim, 'uRes'),
+  frame: gl.getUniformLocation(progSim, 'uFrame'),
+  ptr: gl.getUniformLocation(progSim, 'uPointer'),
+  ptrPrev: gl.getUniformLocation(progSim, 'uPointerPrev'),
+  ptrVel: gl.getUniformLocation(progSim, 'uPointerVel')
+};
+const uGlass = {
+  sim: gl.getUniformLocation(progGlass, 'uSim'),
+  bg: gl.getUniformLocation(progGlass, 'uBg'),
+  res: gl.getUniformLocation(progGlass, 'uRes'),
+  simRes: gl.getUniformLocation(progGlass, 'uSimRes')
+};
+
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+const vbo = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+// --- the page behind the liquid ----------------------------------------
+// Drawn to a 2D canvas and uploaded, standing in for whatever the fluid would
+// sit over on the real site. Swap this for the site's own content when
+// judging how the effect reads against it.
+const bgCanvas = document.createElement('canvas');
+
+function drawBackground() {
+  const ctx = bgCanvas.getContext('2d');
+  bgCanvas.width = W;
+  bgCanvas.height = H;
+
+  ctx.fillStyle = '#F5FAFF';
+  ctx.fillRect(0, 0, W, H);
+
+  const pad = Math.round(W * 0.055);
+  const unit = W / 1512; // everything scales off the design width
+
+  ctx.fillStyle = '#9aa6ad';
+  ctx.font = `500 ${Math.round(14 * unit)}px ui-sans-serif, system-ui, sans-serif`;
+  ctx.fillText('Work', pad, Math.round(120 * unit));
+
+  ctx.fillStyle = '#10171c';
+  ctx.font = `600 ${Math.round(72 * unit)}px ui-sans-serif, system-ui, sans-serif`;
+  ctx.fillText('Your story builds', pad, Math.round(230 * unit));
+  ctx.fillText('our history.', pad, Math.round(320 * unit));
+
+  ctx.fillStyle = '#9aa6ad';
+  ctx.font = `400 ${Math.round(18 * unit)}px ui-sans-serif, system-ui, sans-serif`;
+  ctx.fillText('TypeScript  ·  Java  ·  PostgreSQL', pad, Math.round(380 * unit));
+
+  // Two tiles, so the refraction has hard edges and flat fields to bend.
+  const cardW = Math.round((W - pad * 2 - 40 * unit) / 2);
+  const cardH = Math.round(cardW * 9 / 16);
+  const cardY = Math.round(440 * unit);
+  const tints = [['#1b2a33', '#4a6b7c'], ['#2b1f2e', '#7c5a6b']];
+
+  for (let i = 0; i < 2; i++) {
+    const x = pad + i * (cardW + Math.round(40 * unit));
+    const grad = ctx.createLinearGradient(x, cardY, x + cardW, cardY + cardH);
+    grad.addColorStop(0, tints[i][0]);
+    grad.addColorStop(1, tints[i][1]);
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.roundRect(x, cardY, cardW, cardH, Math.round(14 * unit));
+    ctx.fill();
+
+    ctx.fillStyle = '#ffffff';
+    ctx.font = `600 ${Math.round(34 * unit)}px ui-sans-serif, system-ui, sans-serif`;
+    ctx.fillText(i === 0 ? 'Themis' : 'Meridian',
+      x + Math.round(36 * unit), cardY + cardH - Math.round(56 * unit));
+    ctx.fillStyle = 'rgba(255,255,255,0.85)';
+    ctx.font = `400 ${Math.round(16 * unit)}px ui-sans-serif, system-ui, sans-serif`;
+    ctx.fillText('TypeScript · Java · PostgreSQL',
+      x + Math.round(36 * unit), cardY + cardH - Math.round(26 * unit));
+  }
+
+  if (!bgTex) {
+    bgTex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, bgTex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  }
+  gl.bindTexture(gl.TEXTURE_2D, bgTex);
+  // The 2D canvas has its origin top-left and GL textures bottom-left, so the
+  // upload is flipped once here rather than in every sample.
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, bgCanvas);
+}
+
+// --- sizing -------------------------------------------------------------
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+  W = Math.max(2, Math.floor(window.innerWidth * dpr));
+  H = Math.max(2, Math.floor(window.innerHeight * dpr));
+  canvas.width = W;
+  canvas.height = H;
+
+  // Half resolution for the solver. Its cost is per-cell and the result is
+  // soft-edged, so the display pass gets the detail for a quarter of the work.
+  SW = Math.max(2, Math.floor(W * 0.5));
+  SH = Math.max(2, Math.floor(H * 0.5));
+
+  simA = createFBO(SW, SH);
+  simB = createFBO(SW, SH);
+  frame = 0;
+
+  drawBackground();
+}
+
+// --- pointer ------------------------------------------------------------
+function movePointer(clientX, clientY) {
+  const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+  ptr.px = ptr.x;
+  ptr.py = ptr.y;
+  ptr.x = clientX * dpr * 0.5;          // into simulation px
+  ptr.y = SH - clientY * dpr * 0.5;     // GL has y up
+  ptr.moved = true;
+  if (!userMoved) {
+    userMoved = true;
+    hint.classList.add('gone');
+  }
+}
+
+// pointer* covers mouse, pen and touch in one path.
+window.addEventListener('pointermove', e => movePointer(e.clientX, e.clientY), { passive: true });
+window.addEventListener('pointerdown', e => movePointer(e.clientX, e.clientY), { passive: true });
+window.addEventListener('resize', resize);
+
+resize();
+
+// --- frame --------------------------------------------------------------
+function render() {
+  // Until the pointer is touched, walk it along a lissajous path so the page
+  // is never a blank rectangle. It stops for good on the first real move.
+  if (!userMoved) {
+    const t = (performance.now() - started) / 1000;
+    ptr.px = ptr.x;
+    ptr.py = ptr.y;
+    ptr.x = (0.5 + 0.28 * Math.cos(t * 0.7)) * SW;
+    ptr.y = (0.5 + 0.22 * Math.sin(t * 1.1)) * SH;
+    ptr.moved = frame > 4;
+  }
+
+  // Clamp again on the JS side: the shader clamp is the second line of
+  // defence, not the first.
+  const vx = Math.max(-50, Math.min(50, ptr.x - ptr.px));
+  const vy = Math.max(-50, Math.min(50, ptr.y - ptr.py));
+
+  // Pass 1 — simulate: read simA, write simB, swap.
+  gl.useProgram(progSim);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, simB.fbo);
+  gl.viewport(0, 0, SW, SH);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, simA.tex);
+  gl.uniform1i(uSim.sim, 0);
+  gl.uniform2f(uSim.res, SW, SH);
+  gl.uniform1i(uSim.frame, frame);
+  gl.uniform3f(uSim.ptr, ptr.x, ptr.y, ptr.moved ? 1 : 0);
+  gl.uniform2f(uSim.ptrPrev, ptr.px, ptr.py);
+  gl.uniform2f(uSim.ptrVel, vx, vy);
+  gl.bindVertexArray(vao);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+  const tmp = simA; simA = simB; simB = tmp;
+
+  // A resting pointer injects nothing, and the previous position catches up so
+  // the next move measures one frame of travel rather than the whole gap.
+  ptr.moved = false;
+  ptr.px = ptr.x;
+  ptr.py = ptr.y;
+
+  // Pass 2 — shade to the screen.
+  gl.useProgram(progGlass);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, W, H);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, simA.tex);
+  gl.activeTexture(gl.TEXTURE1);
+  gl.bindTexture(gl.TEXTURE_2D, bgTex);
+  gl.uniform1i(uGlass.sim, 0);
+  gl.uniform1i(uGlass.bg, 1);
+  gl.uniform2f(uGlass.res, W, H);
+  gl.uniform2f(uGlass.simRes, SW, SH);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+  frame++;
+  requestAnimationFrame(render);
+}
+
+requestAnimationFrame(render);
+</script>
+</body>
+</html>

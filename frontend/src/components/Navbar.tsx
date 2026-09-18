@@ -45,8 +45,14 @@ export function Navbar() {
   }, []);
 
   // useLenis reads the actual Lenis container scroll (window scroll is always 0 in this setup)
+  // Called every scroll frame; only touch state when the answer actually flips,
+  // so scrolling doesn't queue a Navbar update on every frame.
+  const showLogoRef = useRef(true);
   useLenis(({ scroll }) => {
-    setShowLogo(scroll <= 300);
+    const next = scroll <= 300;
+    if (next === showLogoRef.current) return;
+    showLogoRef.current = next;
+    setShowLogo(next);
   });
 
   return (
@@ -55,7 +61,7 @@ export function Navbar() {
       <div className="h-[88px] sm:h-[104px] w-full shrink-0" />
 
       <header 
-        className="fixed top-0 left-0 w-full z-[99999] flex items-center justify-between px-6 sm:px-10 lg:px-14 pt-6 sm:pt-8 shrink-0 pointer-events-none"
+        className="fixed top-0 left-0 w-full z-[99999] flex items-center justify-between page-gutter pt-6 sm:pt-8 shrink-0 pointer-events-none"
         style={{ '--nav-width': `${navWidth}px` } as React.CSSProperties}
       >
 

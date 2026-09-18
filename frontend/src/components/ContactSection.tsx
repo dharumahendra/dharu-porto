@@ -1,7 +1,9 @@
-import { motion, useMotionValue, useTransform } from 'framer-motion';
+﻿import { motion, useMotionValue, useTransform } from 'framer-motion';
 import { useLenis } from 'lenis/react';
 import { Navbar } from './Navbar';
-const ELEMEN_HERO = "/engine.png";
+// 320px source for a 120px-max element. The original engine.png is 2048x2048
+// (538 KB), roughly 290x more pixels than are ever displayed.
+const ELEMEN_HERO = "/engine-320.png";
 
 export function ContactSection() {
   // useScroll() always reads window.scrollY = 0 because Lenis scrolls its own container.
@@ -28,7 +30,7 @@ export function ContactSection() {
               {/* Layer 1: contact  */}
               <h1
                 aria-hidden="true"
-                className="-ml-[0.06em] pointer-events-none select-none font-semibold tracking-[-0.05em] m-0 whitespace-nowrap font-sans leading-none text-[#10171c] text-[30vw] sm:text-[28vw] lg:text-[23vw]">
+                className="-ml-[0.06em] pointer-events-none select-none font-semibold tracking-[-0.05em] m-0 whitespace-nowrap font-display leading-none text-[#10171c] text-[30vw] sm:text-[28vw] lg:text-[23vw]">
                 contact
               </h1>
 
@@ -43,6 +45,9 @@ export function ContactSection() {
                 <img
                   src={ELEMEN_HERO}
                   alt="Hero Element Box"
+                  width={320}
+                  height={320}
+                  decoding="async"
                   className="w-full h-auto" />
               </motion.div>
 
@@ -57,6 +62,9 @@ export function ContactSection() {
                 <img
                   src={ELEMEN_HERO}
                   alt="Hero Element Box 2"
+                  width={320}
+                  height={320}
+                  decoding="async"
                   className="w-full h-auto" />
               </motion.div>
             </div>

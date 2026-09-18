@@ -29,7 +29,7 @@ export function HeroSection() {
               {/* Layer 1: dharu  */}
               <h1
                 aria-hidden="true"
-                className="-ml-[0.06em] pointer-events-none select-none font-semibold m-0 whitespace-nowrap font-sans leading-none tracking-[-0.05em] text-[#10171c] text-[30vw] sm:text-[28vw] lg:text-[30vw]">
+                className="-ml-[0.06em] pointer-events-none select-none font-semibold m-0 whitespace-nowrap font-display leading-none tracking-[-0.05em] text-[#10171c] text-[30vw] sm:text-[28vw] lg:text-[30vw]">
                 dharu
               </h1>
 
@@ -64,7 +64,7 @@ export function HeroSection() {
 
             {/* Layer 3: Headline */}
             <div className="relative z-30 max-w-[640px]">
-              <p className="text-[#10171c] font-['Poppins'] font-medium font-sans tracking-tighter text-xl leading-tight sm:text-3xl sm:leading-tight md:text-4xl md:leading-tight lg:text-[54px] lg:leading-[60px]">
+              <p className="text-[#10171c] font-medium font-sans tracking-tighter text-xl leading-tight sm:text-3xl sm:leading-tight md:text-4xl md:leading-tight lg:text-[54px] lg:leading-[60px]">
                 Your story builds
                 <br />
                 our history.

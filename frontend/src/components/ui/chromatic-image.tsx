@@ -146,22 +146,43 @@ export function ChromaticImage({
   // its own context, and compiling their shaders all at once on load was the
   // single longest main-thread stall on the page. Until then the plain <img>
   // below is what shows, which looks identical at rest.
+  //
+  // "Nears" means a good screen and a half ahead, not just at the edge. The
+  // setup blocks the main thread (shader compile, texture upload), and with a
+  // small margin it landed exactly as the card's own entrance started, so the
+  // first entrance after a reload skipped straight to its end state.
   const [active, setActive] = useState(false);
 
   useEffect(() => {
     const container = containerRef.current;
     if (!container || active) return;
+    const w = window as Window & {
+      requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
+      cancelIdleCallback?: (id: number) => void;
+    };
+    let idleId: number | undefined;
+    let timer: number | undefined;
     const io = new IntersectionObserver(
       (entries) => {
         if (entries.some((entry) => entry.isIntersecting)) {
-          setActive(true);
           io.disconnect();
+          // The margin is crossed mid-scroll, and several cards cross it on
+          // the same frame. Waiting for an idle gap gives each setup its own
+          // slot between scroll frames instead of one long stall on top of
+          // them. The timeout still lands well before the card arrives.
+          const go = () => setActive(true);
+          if (w.requestIdleCallback) idleId = w.requestIdleCallback(go, { timeout: 1000 });
+          else timer = window.setTimeout(go, 200);
         }
       },
-      { root: getScrollRoot(container), rootMargin: "200px 0px" },
+      { root: getScrollRoot(container), rootMargin: "150% 0px" },
     );
     io.observe(container);
-    return () => io.disconnect();
+    return () => {
+      io.disconnect();
+      if (idleId !== undefined) w.cancelIdleCallback?.(idleId);
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
   }, [active]);
 
   useEffect(() => {
@@ -333,7 +354,10 @@ export function ChromaticImage({
 
     const image = new Image();
     image.crossOrigin = "anonymous";
-    image.onload = () => {
+    image.onload = async () => {
+      // Decode off the main thread first; otherwise texImage2D decodes the
+      // whole image synchronously during the upload.
+      await image.decode().catch(() => {});
       if (disposed) return;
       gl.bindTexture(gl.TEXTURE_2D, texture);
       gl.texImage2D(

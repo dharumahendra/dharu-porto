@@ -7,14 +7,13 @@ import type { Experience } from '../data/experiences';
 /*
  * Z-depth fly-through, ported from the z-depth-experience skill's reference
  * demo. Cards float in 3D space; the "camera" is the inverse transform of the
- * scene, flown forward by a GSAP timeline.
+ * scene.
  *
- * One deliberate difference from the demo: the timeline is not pinned or
- * scrubbed by ScrollTrigger. This page scrolls a Lenis container rather than
- * the window, and the black box that hosts the scene is already pinned with
- * `position: sticky` — so the host hands in a 0–1 progress value and the
- * timeline is simply set to it. Snapping to cards is done through the same
- * host, which knows how to turn a progress value back into a scroll position.
+ * Unlike the demo, the camera is not scrubbed by scroll. The host holds the
+ * page still while the scene is up and hands in a card index (`step`); each
+ * change flies the camera to that card on its own clock, in one eased move.
+ * Scrubbing plus a debounced snap fought the smooth scroller's momentum and
+ * read as stutter, and it made the visitor scroll through every gap.
  */
 
 const CONFIG = {
@@ -33,26 +32,14 @@ const CONFIG = {
   stopDistance: 220,
   // Must stay below stopDistance - 20, or a card starts fading while it is read.
   approachDrift: 70,
-  introDistance: 1800,
-  hold: 0.9,
-  move: 1,
-  scrollPerUnit: 0.9,
-  snap: true
+  introDistance: 1800
 };
 
-// Timeline units for the opening fly-in to the first card. That stretch plays
-// on the host's clock (`intro`), not on scroll.
-const INTRO_UNITS = CONFIG.move * 1.4;
-
-/** Timeline units after the fly-in, mirroring how the timeline below is built. */
-function scrolledUnits(count: number) {
-  return count * CONFIG.hold + (count - 1) * CONFIG.move + 0.3;
-}
-
-/** Scroll distance the fly-through needs, in viewport heights × 100 (svh). */
-export function depthScrollVh(count: number) {
-  return scrolledUnits(count) * CONFIG.scrollPerUnit * 100;
-}
+/** Seconds for the camera to fly from one card to the next. */
+export const STEP_DURATION = 1.25;
+// Jumping several cards at once (the dots) takes a little longer per extra
+// card, so the flight doesn't turn into a blur.
+export const STEP_EXTRA_PER_CARD = 0.3;
 
 interface Pose {
   x: number;
@@ -85,11 +72,11 @@ const pad = (i: number) => String(i).padStart(2, '0');
 interface ExperienceDepthProps {
   experiences: Experience[];
   label: string;
-  /** 0–1 through the fly-through, driven by the host's scroll. */
-  progress: MotionValue<number>;
-  /** Scrolls the page so the fly-through lands at `p`. */
-  seek: (p: number) => void;
-  /** 0–1: the camera's fly-in to the first card, played by the host on a clock. */
+  /** Index of the card the camera should be at. */
+  step: MotionValue<number>;
+  /** Asks the host to go to card `i` (the progress dots). */
+  onSelect: (i: number) => void;
+  /** 0–1: the camera's fly-in to the current card, played by the host on a clock. */
   intro: MotionValue<number>;
   className?: string;
   style?: CSSProperties;
@@ -98,8 +85,8 @@ interface ExperienceDepthProps {
 export function ExperienceDepth({
   experiences,
   label,
-  progress,
-  seek,
+  step,
+  onSelect,
   intro,
   className = '',
   style
@@ -110,13 +97,6 @@ export function ExperienceDepth({
   const cardRefs = useRef<(HTMLElement | null)[]>([]);
   const ghostRefs = useRef<(HTMLDivElement | null)[]>([]);
   const dotRefs = useRef<(HTMLButtonElement | null)[]>([]);
-  // Label positions as 0–1 progress, for the dots and snapping.
-  const labelProgress = useRef<number[]>([]);
-  // The timeline is built once, but `seek` changes identity once the host's
-  // Lenis instance arrives; snapping reads it through this so it never calls a
-  // stale one that does nothing.
-  const seekRef = useRef(seek);
-  seekRef.current = seek;
 
   const n = experiences.length;
 
@@ -234,8 +214,8 @@ export function ExperienceDepth({
 
       let world: Placed[] = [];
       let ghosts: Pose[] = [];
-      let stops: Pose[] = [];
-      let held: Pose[] = [];
+      // Where the camera rests to read each card.
+      let rests: Pose[] = [];
       let start: Pose = { x: 0, y: 0, z: 0, ry: 0 };
 
       // Camera-path centre at a given z (interpolated between cards).
@@ -259,8 +239,9 @@ export function ExperienceDepth({
           ty: (rand(i + 23) * 2 - 1) * 32 * CONFIG.tilt,
           tz: (rand(i + 29) * 2 - 1) * 10 * CONFIG.tilt
         }));
-        stops = world.map(c => poseFor(c, CONFIG.stopDistance));
-        held = world.map(c => poseFor(c, CONFIG.stopDistance - CONFIG.approachDrift));
+        // Halfway through the old hold's forward drift: the framing every card
+        // was read at when the camera was scrubbed.
+        rests = world.map(c => poseFor(c, CONFIG.stopDistance - CONFIG.approachDrift / 2));
         start = poseFor(world[0], CONFIG.stopDistance + CONFIG.introDistance);
 
         const k = Math.min(1, innerWidth / 1100);
@@ -330,90 +311,56 @@ export function ExperienceDepth({
         if (next !== -1 && next !== active) setActive(next);
       }
 
-      /* ---------- timeline, driven by the host's progress ---------- */
-      const P = (get: () => Pose) => ({
-        x: () => get().x,
-        y: () => get().y,
-        z: () => get().z,
-        ry: () => get().ry
-      });
-      const tl = gsap.timeline({ paused: true, onUpdate: render });
-      tl.fromTo(cam, P(() => start), {
-        ...P(() => stops[0]),
-        duration: CONFIG.move * 1.4,
-        ease: 'power2.out',
-        immediateRender: false
-      });
-      for (let i = 0; i < n; i++) {
-        const t0 = tl.duration();
-        tl.fromTo(cam, P(() => stops[i]), {
-          ...P(() => held[i]),
-          duration: CONFIG.hold,
-          ease: 'none',
-          immediateRender: false
-        });
-        tl.addLabel(`card-${i}`, t0 + CONFIG.hold / 2);
-        if (i < n - 1) {
-          tl.fromTo(cam, P(() => held[i]), {
-            ...P(() => stops[i + 1]),
-            duration: CONFIG.move,
-            ease: 'power2.inOut',
-            immediateRender: false
-          });
-        }
-      }
-      tl.to({}, { duration: 0.3 }); // short breath before the box scrolls away
+      /* ---------- flight ---------- */
+      const clampStep = (i: number) => Math.min(n - 1, Math.max(0, Math.round(i)));
+      // The camera's resting pose, flown between cards by one tween at a time.
+      let current = clampStep(step.get());
+      const focus: Pose = { ...rests[current] };
 
-      // Scroll only covers what comes after the fly-in, so label positions are
-      // expressed as progress through that part.
-      const rest = tl.duration() - INTRO_UNITS;
-      labelProgress.current = experiences.map(
-        (_, i) => (tl.labels[`card-${i}`] - INTRO_UNITS) / rest
-      );
-
-      // The fly-in scales the whole target time rather than just its own
-      // stretch: while it plays, a scroll that has already started pulls the
-      // camera on proportionally instead of jumping once the fly-in lands. At
-      // intro 1 it is plain scroll position again.
-      const sync = () => tl.time(intro.get() * (INTRO_UNITS + progress.get() * rest));
+      // The fly-in blends from the start pose onto `focus`, eased out so the
+      // camera glides into the first card rather than braking hard. At intro 1
+      // the camera simply is `focus`.
+      const sync = () => {
+        const k = intro.get();
+        const e = 1 - (1 - k) * (1 - k);
+        cam.x = start.x + (focus.x - start.x) * e;
+        cam.y = start.y + (focus.y - start.y) * e;
+        cam.z = start.z + (focus.z - start.z) * e;
+        cam.ry = start.ry + (focus.ry - start.ry) * e;
+        render();
+      };
       sync();
-      render();
       const stopIntro = intro.on('change', sync);
 
-      /* ---------- snap to the nearest card in the direction of travel ---------- */
-      let snapTimer: number | undefined;
-      let settledAt = progress.get();
-      const unsubscribe = progress.on('change', p => {
-        sync();
-        if (!CONFIG.snap) return;
-        window.clearTimeout(snapTimer);
-        snapTimer = window.setTimeout(() => {
-          const from = settledAt;
-          settledAt = p;
-          if (p <= 0 || p >= 1) return;
-          const labels = labelProgress.current;
-          const dir = Math.sign(p - from);
-          const eps = 0.002;
-          const target =
-            dir > 0
-              ? labels.find(l => l >= p - eps)
-              : dir < 0
-                ? [...labels].reverse().find(l => l <= p + eps)
-                : undefined;
-          if (target !== undefined && Math.abs(target - p) > eps) {
-            settledAt = target;
-            seekRef.current(target);
-          }
-        }, 180);
+      const unsubscribe = step.on('change', value => {
+        const i = clampStep(value);
+        const cards = Math.abs(i - current);
+        current = i;
+        gsap.killTweensOf(focus);
+        // Not on screen yet (box still growing, or the fly-in hasn't started):
+        // nothing to animate, just be there.
+        if (intro.get() === 0) {
+          Object.assign(focus, rests[i]);
+          sync();
+          return;
+        }
+        if (cards === 0) return;
+        gsap.to(focus, {
+          ...rests[i],
+          duration: STEP_DURATION + (cards - 1) * STEP_EXTRA_PER_CARD,
+          // One continuous ease-in-out per move — no scroll velocity feeding
+          // in, so there is nothing for it to stutter against.
+          ease: 'power3.inOut',
+          onUpdate: sync
+        });
       });
 
       /* ---------- relayout on resize and once web fonts settle ---------- */
       const relayout = () => {
         computeLayout();
-        tl.invalidate();
-        tl.time(0);
+        gsap.killTweensOf(focus);
+        Object.assign(focus, rests[current]);
         sync();
-        render();
       };
       window.addEventListener('resize', relayout);
       document.fonts?.ready.then(relayout);
@@ -438,10 +385,9 @@ export function ExperienceDepth({
       return () => {
         unsubscribe();
         stopIntro();
-        window.clearTimeout(snapTimer);
+        gsap.killTweensOf(focus);
         window.removeEventListener('resize', relayout);
         if (onPointer) window.removeEventListener('pointermove', onPointer);
-        tl.kill();
       };
     },
     { scope: rootRef, dependencies: [experiences, n] }
@@ -572,7 +518,7 @@ export function ExperienceDepth({
             }}
             type="button"
             aria-label={`${exp.role}, ${exp.org}`}
-            onClick={() => seek(labelProgress.current[i] ?? 0)}
+            onClick={() => onSelect(i)}
             className="size-2.5 rounded-full border border-white/40 transition-[transform,background-color,border-color] duration-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[3px] focus-visible:outline-white [&.is-active]:scale-[1.4] [&.is-active]:border-[var(--accent)] [&.is-active]:bg-[var(--accent)]"
           />
         ))}

@@ -1,5 +1,5 @@
 import { MessageSquareIcon } from 'lucide-react';
-import { motion } from 'framer-motion';
+import { motion, useIsPresent } from 'framer-motion';
 import { useLenis } from 'lenis/react';
 import { useState, useRef, useEffect } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
@@ -48,7 +48,14 @@ export function Navbar() {
   // Called every scroll frame; only touch state when the answer actually flips,
   // so scrolling doesn't queue a Navbar update on every frame.
   const showLogoRef = useRef(true);
+  // A page on its way out keeps its navbar as it was. The page coming in
+  // resets the shared scroll to 0 straight away, and without this the leaving
+  // navbar read that as its own scroll and slid its logo back in mid-transition.
+  const isPresent = useIsPresent();
+  const isPresentRef = useRef(isPresent);
+  isPresentRef.current = isPresent;
   useLenis(({ scroll }) => {
+    if (!isPresentRef.current) return;
     const next = scroll <= 300;
     if (next === showLogoRef.current) return;
     showLogoRef.current = next;

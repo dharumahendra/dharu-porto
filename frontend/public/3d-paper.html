@@ -586,7 +586,8 @@ window.__sheet = {group, mat, uni, renderer, scene, camera, mesh,
   function sync(){ window.__paperPaused = offscreen || document.hidden; }
   sync();
   window.addEventListener("message", function(ev){
-    if (ev.origin !== window.location.origin) return;
+    // The host sandboxes this frame, so its own origin is opaque and can't be
+    // compared against; the parent window is what identifies the sender.
     if (ev.source !== window.parent) return;
     var d = ev.data;
     if (!d || d.type !== "paper:visibility") return;
@@ -611,7 +612,7 @@ window.__sheet = {group, mat, uni, renderer, scene, camera, mesh,
       deltaX: e.deltaX,
       deltaY: e.deltaY,
       deltaMode: e.deltaMode
-    }, window.location.origin);
+    }, "*"); // opaque origin under the sandbox; the payload is only wheel deltas
   }, { passive: false });
 })();
 </script>

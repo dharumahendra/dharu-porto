@@ -1,5 +1,5 @@
 import { Routes, Route, useLocation } from 'react-router-dom';
-import { AnimatePresence, motion, useIsPresent } from 'framer-motion';
+import { AnimatePresence, motion, useIsPresent, useReducedMotion } from 'framer-motion';
 import { ReactLenis, useLenis } from 'lenis/react';
 import { useEffect, useLayoutEffect, useState, useRef, forwardRef, lazy, Suspense } from 'react';
 import { HeroSection } from './components/HeroSection';
@@ -10,7 +10,9 @@ import { StudioSection } from './components/StudioSection';
 import { IdentitySectionAlt } from './components/IdentitySectionAlt';
 import { ExperienceSection } from './components/ExperienceSection';
 import { CustomScrollbar } from './components/CustomScrollbar';
-import { FooterSection } from './components/FooterSection';
+// Two footer designs are kept; swap the import to Footer1 for the navy one.
+import { Footer2 as FooterSection } from './components/Footer2';
+import { pageEase, pageEaseCss, timeAtProgress } from './lib/page-ease';
 
 // Pulls Three.js (~600 KB raw) into its own chunk so it no longer blocks first
 // paint. The overlay is decorative, so it can arrive a beat after the content.
@@ -25,7 +27,11 @@ function ScrollToTop() {
 
   useLayoutEffect(() => {
     if (lenis && lenis.scroll !== 0) {
-      lenis.scrollTo(0, { immediate: true });
+      // Forced: the page being left may still be holding the scroller stopped
+      // (the experience section does while its cards are up), and an unforced
+      // scrollTo is silently ignored then — the new page would open wherever
+      // the old one was scrolled to.
+      lenis.scrollTo(0, { immediate: true, force: true });
     }
   }, [lenis]);
 
@@ -35,19 +41,54 @@ function ScrollToTop() {
 // Whether any page has mounted yet this visit; only later pages animate in.
 let hasShownAPage = false;
 
+// Page transition. The leaving page and the arriving one share one clock and
+// one ease, so the hand-over reads as a single movement.
+const PAGE_TRANSITION = 1.1;
+// The curve — slow creep, abrupt switch, very fast run, short brake — lives in
+// src/lib/page-ease.ts, where each phase is its own number. The blur/darken
+// veil (.page-veil in index.css) is handed the same curve automatically.
+const PAGE_EASE = pageEase;
+const ENTER_SCALE = 0.92;
+const ENTER_RADIUS = 40;
+// The top corners square off once the arriving page is this close to landing
+// (share of its travel), finishing as it lands. Timed from the curve itself,
+// so it stays right whatever the curve is tuned to.
+const RADIUS_FROM = 0.85;
+const RADIUS_START = timeAtProgress(RADIUS_FROM);
+// How far up the leaving page scrolls, as a share of the screen height. On the
+// same clock and ease as the arriving page's rise, but a shorter distance, so
+// the old page falls behind as the new one slides over it (a parallax).
+const EXIT_DRIFT = 0.3;
+const PAGE_BG = '#F5FAFF';
+
 const MotionPage = forwardRef<HTMLDivElement, { children: React.ReactNode, pathname: string }>(
   ({ children, pathname }, ref) => {
     const isPresent = useIsPresent();
     const lenis = useLenis();
     const exitScrollRef = useRef(0);
+    // Read by the scroll listener instead of the closure's `isPresent`. The
+    // incoming page resets the scroll in its own layout effect, which can run
+    // before this page's listener is re-subscribed with isPresent false; the
+    // stale listener then recorded 0, and any re-render during the exit
+    // snapped the leaving page back to its top.
+    const isPresentRef = useRef(isPresent);
+    isPresentRef.current = isPresent;
+    // Every distance in the transition is a share of the *screen*, never of the
+    // page: a share of the page's own height (the old '100%' / '-15%') meant
+    // thousands of px on a long page, so the new page only showed up at the
+    // very end of its entrance, already moving fast, and the leaving page tore
+    // upwards. Read on every render, so the value in use is the one from the
+    // render that starts the animation.
+    const vh = window.innerHeight;
+    const reduceMotion = useReducedMotion();
     // The first page of a visit shows at once (AnimatePresence initial={false}),
     // so there is no entrance to wait out and nothing to block clicks for.
     const [isEntering, setIsEntering] = useState(() => hasShownAPage);
 
-    // Kunci layar selama 1.5 detik (durasi maksimal exit animation)
+    // Kunci layar selama animasi masuk berjalan.
     useLayoutEffect(() => {
       hasShownAPage = true;
-      const timer = setTimeout(() => setIsEntering(false), 1500);
+      const timer = setTimeout(() => setIsEntering(false), PAGE_TRANSITION * 1000);
       return () => clearTimeout(timer);
     }, []);
 
@@ -55,7 +96,7 @@ const MotionPage = forwardRef<HTMLDivElement, { children: React.ReactNode, pathn
       if (!lenis) return;
       
       const onScroll = (e: any) => {
-        if (isPresent) {
+        if (isPresentRef.current) {
           exitScrollRef.current = e.scroll;
         }
       };
@@ -66,59 +107,137 @@ const MotionPage = forwardRef<HTMLDivElement, { children: React.ReactNode, pathn
       };
     }, [lenis, isPresent]);
 
+    const exitScroll = exitScrollRef.current;
+
+    // Fixed elements inside the leaving page (the navbar) start where they were
+    // on screen and scroll up with it. The leaving page is made their containing
+    // block (will-change: transform, below) from its very first frame, so
+    // they are re-anchored to the part of it that was on screen. Without
+    // this, the moment the exit transform applied they snapped to the page's
+    // own top, far above the screen, and the navbar blinked out.
+    const pageRef = useRef<HTMLDivElement | null>(null);
+
+    // Where each fixed element sat on screen just before the exit, measured
+    // during the render that starts it — the DOM is still in its old layout
+    // then, before this render's styles are committed.
+    const fixedBefore = useRef<Map<HTMLElement, number> | null>(null);
+    if (!isPresent && !fixedBefore.current && pageRef.current) {
+      const before = new Map<HTMLElement, number>();
+      // Only candidates are checked, not the whole tree: one style read each.
+      pageRef.current
+        .querySelectorAll<HTMLElement>('.fixed, [style*="position: fixed"]')
+        .forEach(el => {
+          if (getComputedStyle(el).position === 'fixed') {
+            before.set(el, el.getBoundingClientRect().top);
+          }
+        });
+      fixedBefore.current = before;
+    }
+
+    useLayoutEffect(() => {
+      const before = fixedBefore.current;
+      if (isPresent || !before) return;
+      // Now the leaving page is their containing block. Each is shifted back
+      // to exactly where it was, whatever it is anchored by (top, bottom or
+      // both) — measured, not worked out from its insets. Reading insets back
+      // through getComputedStyle gave px values even where the CSS said
+      // `auto`, and writing those back squashed the navbar.
+      // From there they belong to the page and scroll up with it, navbar
+      // included. `translate` rather than `transform`, so it can't clash with
+      // a transform of their own.
+      before.forEach((top, el) => {
+        el.style.translate = `0 ${top - el.getBoundingClientRect().top}px`;
+      });
+    }, [isPresent]);
+
     return (
       <motion.div
-        ref={ref}
+        ref={el => {
+          pageRef.current = el;
+          if (typeof ref === 'function') ref(el);
+          else if (ref) ref.current = el;
+        }}
         key={pathname}
-      initial={{ 
-        y: '100%', 
-        scale: 0.85, 
-        borderTopLeftRadius: '4rem', 
-        borderTopRightRadius: '4rem',
-        zIndex: 50 
-      }}
-      animate={{ 
-        y: 0,
-        scale: 1,
-        borderTopLeftRadius: '0rem',
-        borderTopRightRadius: '0rem',
-        transition: { 
-          default: { duration: 1, delay: 0.2, ease: [0.22, 1, 0.53, 1] },
-          borderTopLeftRadius: { duration: 0.5, delay: 0.8, ease: 'easeOut' },
-          borderTopRightRadius: { duration: 0.5, delay: 0.8, ease: 'easeOut' }
+        // Entering: rises from just below the screen, a little small, its top
+        // corners rounded like a sheet, and squares off as it lands. Scaled
+        // from its top edge, which is the part on screen (the new page starts
+        // at scroll 0), so the rounded corners stay in view the whole way.
+        initial={
+          reduceMotion
+            ? { opacity: 0 }
+            : {
+                y: vh,
+                scale: ENTER_SCALE,
+                borderTopLeftRadius: ENTER_RADIUS,
+                borderTopRightRadius: ENTER_RADIUS
+              }
         }
-      }}
-      onAnimationComplete={() => {
-        if (lenis) {
-          lenis.resize();
+        animate={
+          reduceMotion
+            ? { opacity: 1, transition: { duration: 0.3 } }
+            : {
+                y: 0,
+                scale: 1,
+                borderTopLeftRadius: 0,
+                borderTopRightRadius: 0,
+                transition: {
+                  default: { duration: PAGE_TRANSITION, ease: PAGE_EASE },
+                  // Corners hold their round through the fast run and square
+                  // off only as the page lands (see RADIUS_FROM).
+                  borderTopLeftRadius: {
+                    duration: PAGE_TRANSITION * (1 - RADIUS_START),
+                    delay: PAGE_TRANSITION * RADIUS_START,
+                    ease: 'easeOut'
+                  },
+                  borderTopRightRadius: {
+                    duration: PAGE_TRANSITION * (1 - RADIUS_START),
+                    delay: PAGE_TRANSITION * RADIUS_START,
+                    ease: 'easeOut'
+                  }
+                }
+              }
         }
-      }}
-      exit={{
-        y: ['0%', '-4%', '-15%'],
-        zIndex: 0,
-        x: 0, // Keeps the component mounted longer
-        transition: {
-          y: {
-            duration: 1.5, 
-            times: [0, 0.33, 1], 
-            ease: ['easeOut', [0.53, 1, 0.36, 1]] 
-          },
-          x: { duration: 1.5 } 
+        onAnimationComplete={() => {
+          if (lenis) {
+            lenis.resize();
+          }
+        }}
+        // Leaving: scrolls up a little, behind the arriving page, under a
+        // darkening blur. Not scaled. Transform only, so it never leaves the
+        // compositor.
+        exit={
+          reduceMotion
+            ? { opacity: 1, transition: { duration: 0.3 } }
+            : {
+                y: -EXIT_DRIFT * vh,
+                transition: { duration: PAGE_TRANSITION, ease: PAGE_EASE }
+              }
         }
-      }}
-      style={{ 
-        position: isPresent ? 'relative' : 'fixed', 
-        top: isPresent ? 0 : -exitScrollRef.current, 
-        left: 0, 
-        width: '100%', 
-        minHeight: '100%', 
-        // `clip`, not `hidden`: hidden turns this wrapper into a scroll
-        // container, which silently breaks `position: sticky` for everything
-        // inside it. clip trims the overflow the same way without that.
-        overflowX: 'clip',
-        pointerEvents: isPresent ? 'auto' : 'none'
-      }}
-    >
+        style={{
+          position: isPresent ? 'relative' : 'fixed',
+          top: isPresent ? 0 : -exitScroll,
+          left: 0,
+          width: '100%',
+          minHeight: '100%',
+          // Its own backdrop: the dark layer behind shows past the rounded
+          // corners of an arriving page, so a page must never be see-through.
+          backgroundColor: PAGE_BG,
+          // Above the backdrop; the arriving page above the leaving one.
+          zIndex: isPresent ? 50 : 1,
+          // Arriving pages scale about their top edge.
+          transformOrigin: '50% 0px',
+          // Leaving: its own compositor layer from the first frame, and the
+          // containing block for its fixed children (see pageRef above).
+          willChange: isPresent ? undefined : 'transform',
+          // `clip`, not `hidden`: hidden turns this wrapper into a scroll
+          // container, which silently breaks `position: sticky` for everything
+          // inside it. clip trims the overflow the same way without that.
+          // Both axes while arriving, so the rounded corners clip the content.
+          overflowX: 'clip',
+          overflowY: isEntering ? 'clip' : undefined,
+          pointerEvents: isPresent ? 'auto' : 'none'
+        }}
+      >
       {/* Blocker overlay: blokir semua klik selama animasi masuk berjalan */}
       {isEntering && (
         <div
@@ -134,23 +253,31 @@ const MotionPage = forwardRef<HTMLDivElement, { children: React.ReactNode, pathn
       )}
       {isPresent && <ScrollToTop />}
       {children}
-      {/* The outgoing page dims under a black layer instead of animating a CSS
-          `filter: blur() brightness()` on itself. A filter on a whole page
-          re-rasterises every layer inside it (WebGL canvases, the 3D paper
-          iframe) on every frame for the full 1.5 s, which was the stutter on
-          navigation; fading one flat layer's opacity stays on the compositor.
-          The black at 0.7 matches the old brightness(0.3). */}
-      <motion.div
-        aria-hidden="true"
-        // Above the page's own fixed navbar (z 99999), which the old filter dimmed too.
-        className="pointer-events-none absolute inset-0 z-[100001] bg-black"
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 0 }}
-        exit={{
-          opacity: [0, 0.1, 0.7],
-          transition: { duration: 1.5, times: [0, 0.33, 1], ease: ['easeOut', [0.53, 1, 0.36, 1]] }
-        }}
-      />
+      {/* The veil over the page being left: darkens and blurs it. Not a CSS
+          `filter` on the page — that re-rasterised every layer inside it
+          (WebGL canvases, the 3D paper iframe) on every frame, which was the
+          old stutter on navigation. Instead one screen-sized layer with a
+          constant backdrop blur fades in (see .page-veil); the blur is done
+          by the GPU and the fade on the compositor. It covers only what was
+          on screen, and exists only while leaving. */}
+      {!isPresent && (
+        <div
+          aria-hidden="true"
+          // Above the page's own fixed navbar (z 99999), so that dims too.
+          className="page-veil pointer-events-none absolute inset-x-0 z-[100001]"
+          style={{
+            top: exitScroll,
+            // Taller than the screen by the drift, so the content the page
+            // scrolls up into view is veiled too. Past the end of a short page
+            // it simply hangs over the dark stage, which reads the same.
+            height: vh * (1 + EXIT_DRIFT) + 2,
+            // The veil's blur and darkening run on the pages' own clock and
+            // curve (see .page-veil in index.css).
+            ['--page-veil-duration' as string]: `${PAGE_TRANSITION}s`,
+            ['--page-veil-ease' as string]: pageEaseCss
+          }}
+        />
+      )}
     </motion.div>
   );
 });
@@ -200,6 +327,9 @@ export function App() {
           screen and made the visitor wait out the slide before seeing
           anything — and because the first paint happened off screen, the
           browser never recorded a largest contentful paint at all. */}
+      {/* The dark stage behind the pages. Always covered by the current page;
+          it only shows past the rounded top corners of one arriving. */}
+      <div aria-hidden="true" className="pointer-events-none fixed inset-0 z-0 bg-[#07090c]" />
       <AnimatePresence initial={false}>
         <MotionPage key={location.pathname} pathname={location.pathname}>
           <Routes location={location}>

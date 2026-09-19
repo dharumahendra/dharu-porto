@@ -64,6 +64,54 @@ body {
   color: white;
 }
 
+/* Page transitions: the veil over the page being left. It blurs and darkens
+   the old page, both from nothing, on the same clock and curve as the pages
+   move — sharp and light through the slow start, then blurring and darkening
+   with the fast run. App.tsx passes the clock and curve in as
+   --page-veil-duration and --page-veil-ease (from PAGE_TRANSITION and
+   PAGE_EASE), so they never need copying here.
+
+   Two layers, so each property animates on its own: the element itself grows
+   the blur (backdrop-filter radius), and ::after on top of it darkens by
+   opacity alone, which stays on the compositor. Nothing on the page itself is
+   touched, so nothing inside it is re-rasterised. */
+.page-veil {
+  --page-veil-blur: 14px; /* how blurred the old page ends up */
+  --page-veil-dark: 0.7; /* how dark: 0 none … 1 black. Keep it below 1. */
+  -webkit-backdrop-filter: blur(0px);
+  backdrop-filter: blur(0px);
+  animation: page-veil-blur var(--page-veil-duration, 1.1s) var(--page-veil-ease, ease-in-out) forwards;
+}
+.page-veil::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-color: rgb(8, 10, 14);
+  opacity: 0;
+  animation: page-veil-dark var(--page-veil-duration, 1.1s) var(--page-veil-ease, ease-in-out) forwards;
+}
+@keyframes page-veil-blur {
+  to {
+    -webkit-backdrop-filter: blur(var(--page-veil-blur));
+    backdrop-filter: blur(var(--page-veil-blur));
+  }
+}
+@keyframes page-veil-dark {
+  to {
+    opacity: var(--page-veil-dark);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  /* No blur: a quick darken is all there is. */
+  .page-veil {
+    animation: none;
+  }
+  .page-veil::after {
+    animation-duration: 0.3s;
+    animation-timing-function: ease-out;
+  }
+}
+
 /* Hide native scrollbar completely — replaced by custom overlay scrollbar */
 ::-webkit-scrollbar {
   display: none;

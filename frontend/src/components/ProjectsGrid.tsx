@@ -107,6 +107,57 @@ function useTwoColumns() {
   return twoColumns;
 }
 
+interface RevealCardProps {
+  project: ProjectCardProps;
+  pivot: string;
+  tilt: number;
+  delay: number;
+}
+
+/**
+ * One grid tile with its hinge entrance.
+ *
+ * Driven by `animate` from its own `useInView`, not `initial` + `whileInView`.
+ * The page sits under `<AnimatePresence initial={false}>`, which tells every
+ * motion descendant to skip `initial` and mount at its `animate` values. With
+ * only `whileInView` there was no `animate`, so the card mounted fully shown
+ * and its first entrance had nothing to animate; only after leaving the
+ * viewport did it rewind to `initial`. Here the hidden state *is* `animate`
+ * while off-screen, so it is applied at mount either way.
+ *
+ * Each card watches its own entry, so tiles further down don't spend their
+ * animation off-screen. Not `once`: leaving the viewport rewinds the card, so
+ * the entrance plays on every pass. No margin — it fires the moment any part
+ * touches the viewport and only rewinds once fully out of sight.
+ */
+function RevealCard({ project, pivot, tilt, delay }: RevealCardProps) {
+  const ref = useRef<HTMLDivElement>(null);
+  const inView = useInView(ref, { amount: 'some' });
+
+  return (
+    <motion.div
+      ref={ref}
+      className="will-change-transform"
+      style={{ transformOrigin: pivot }}
+      initial={{ scale: CARD_SCALE, rotate: tilt, opacity: 0 }}
+      animate={inView ? { scale: 1, rotate: 0, opacity: 1 } : { scale: CARD_SCALE, rotate: tilt, opacity: 0 }}
+      transition={
+        inView
+          ? {
+              duration: CARD_DURATION,
+              delay,
+              ease: CARD_EASE,
+              opacity: { duration: CARD_FADE_DURATION, delay, ease: 'easeOut' }
+            }
+          : // Fully off-screen by the time this runs; snap back.
+            { duration: 0 }
+      }
+    >
+      <ProjectCard {...project} />
+    </motion.div>
+  );
+}
+
 export function ProjectsGrid({ label = 'Work', headline = DEFAULT_HEADLINE }: ProjectsGridProps = {}) {
   const headlineRef = useRef(null);
   const isInView = useInView(headlineRef, { once: true, margin: '-20%' });
@@ -237,30 +288,7 @@ export function ProjectsGrid({ label = 'Work', headline = DEFAULT_HEADLINE }: Pr
           const delay = rightColumn ? CARD_STAGGER : 0;
 
           return (
-            // Each card watches its own entry into the viewport, so tiles
-            // further down the grid don't burn their animation while still
-            // off-screen. `once` stays off: leaving the viewport rewinds the
-            // card to its starting state, so the entrance plays again on every
-            // pass. No viewport margin either — the card fires the moment any
-            // part of it touches the viewport edge, instead of waiting to be
-            // scrolled further in, and only rewinds once it is fully out of
-            // sight.
-            <motion.div
-              key={project.title}
-              className="will-change-transform"
-              style={{ transformOrigin: pivot }}
-              initial={{ scale: CARD_SCALE, rotate: tilt, opacity: 0 }}
-              whileInView={{ scale: 1, rotate: 0, opacity: 1 }}
-              viewport={{ once: false, amount: 'some' }}
-              transition={{
-                duration: CARD_DURATION,
-                delay,
-                ease: CARD_EASE,
-                opacity: { duration: CARD_FADE_DURATION, delay, ease: 'easeOut' },
-              }}
-            >
-              <ProjectCard {...project} />
-            </motion.div>
+            <RevealCard key={project.title} project={project} pivot={pivot} tilt={tilt} delay={delay} />
           );
         })}
       </div>

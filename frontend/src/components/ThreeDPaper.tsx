@@ -115,7 +115,9 @@ export function ThreeDPaper({
   const postVisibility = useCallback((visible: boolean) => {
     const win = iframeRef.current?.contentWindow;
     if (!win) return;
-    win.postMessage({ type: 'paper:visibility', visible }, window.location.origin);
+    // '*' because the sandboxed document's origin is opaque ("null"), which no
+    // targetOrigin can name. The message carries nothing but a boolean.
+    win.postMessage({ type: 'paper:visibility', visible }, '*');
   }, []);
 
   useEffect(() => {
@@ -138,7 +140,8 @@ export function ThreeDPaper({
   // the page exactly as if the cursor were not over the card.
   useEffect(() => {
     const onMessage = (ev: MessageEvent) => {
-      if (ev.origin !== window.location.origin) return;
+      // The sandboxed frame reports origin "null", so the source window is
+      // what identifies it.
       if (!iframeRef.current || ev.source !== iframeRef.current.contentWindow) return;
       const d = ev.data;
       if (!d || d.type !== 'paper:wheel') return;
@@ -210,6 +213,12 @@ export function ThreeDPaper({
             touchAction: 'none'
           }}
           allow="accelerometer; autoplay"
+          // Sandboxed without allow-same-origin, so the document gets an opaque
+          // origin and Chrome runs it in its own process. Same-origin, it shared
+          // this page's main thread: parsing the inlined Three.js blocked it for
+          // ~0.5–1 s, and since the card sits right under the hero that landed
+          // on the visitor's first scroll after every refresh.
+          sandbox="allow-scripts"
           loading="lazy"
         />
       )}

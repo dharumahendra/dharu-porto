@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getScrollRoot } from '@/lib/scroll-root';
+import { isInitialLoad, trackLoad } from '@/lib/preload';
+
+// Backstop for the loading screen: a paper that never reports ready (WebGL
+// unavailable, a blocked frame) must not hold the site hostage.
+const PRELOAD_TIMEOUT = 10000;
 
 interface ThreeDPaperProps {
   variant?: 'original';
@@ -47,7 +52,23 @@ export function ThreeDPaper({
   const hostRef = useRef<HTMLDivElement>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [isReady, setIsReady] = useState(false);
-  const [shouldMount, setShouldMount] = useState(false);
+  // Mounted during the loading screen: boot at once, wherever the card sits,
+  // so the loader can wait for it instead of the first scroll paying for it.
+  const [preloading] = useState(isInitialLoad);
+  const [shouldMount, setShouldMount] = useState(preloading);
+
+  // Holds the loading screen until the paper has drawn its first frame.
+  const releaseRef = useRef<(() => void) | null>(null);
+  useEffect(() => {
+    if (!preloading) return;
+    const release = trackLoad();
+    releaseRef.current = release;
+    const timer = window.setTimeout(release, PRELOAD_TIMEOUT);
+    return () => {
+      window.clearTimeout(timer);
+      release();
+    };
+  }, [preloading]);
 
   // Stable URL, derived only from the content that actually varies. The old
   // `_t: Date.now()` cache-buster gave every card a unique URL, so the 632 KB
@@ -144,6 +165,11 @@ export function ThreeDPaper({
       // what identifies it.
       if (!iframeRef.current || ev.source !== iframeRef.current.contentWindow) return;
       const d = ev.data;
+      if (d && d.type === 'paper:ready') {
+        setIsReady(true);
+        releaseRef.current?.();
+        return;
+      }
       if (!d || d.type !== 'paper:wheel') return;
       hostRef.current?.dispatchEvent(
         new WheelEvent('wheel', {
@@ -219,7 +245,9 @@ export function ThreeDPaper({
           // ~0.5–1 s, and since the card sits right under the hero that landed
           // on the visitor's first scroll after every refresh.
           sandbox="allow-scripts"
-          loading="lazy"
+          // A lazy iframe below the fold never loads, which would leave the
+          // loading screen waiting for it.
+          loading={preloading ? 'eager' : 'lazy'}
         />
       )}
     </div>

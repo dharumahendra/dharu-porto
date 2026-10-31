@@ -387,6 +387,9 @@ export function ExperienceSection({
   // How far each axis has to stretch for the box to cover the viewport.
   const coverX = useMotionValue(1);
   const coverY = useMotionValue(1);
+  // The box's own size, untransformed: the fly-through is clipped to it.
+  const boxW = useMotionValue(0);
+  const boxH = useMotionValue(0);
   const depthVh = DEPTH_VH;
 
   // While the cards are up the page is held still ("captured") and gestures
@@ -405,6 +408,12 @@ export function ExperienceSection({
     else lenis.start();
   }, []);
   const captured = useRef(false);
+  // A card is opened into its detail panel: gestures and keys leave the camera
+  // alone until it has closed again.
+  const detailOpen = useRef(false);
+  const onDetailChange = useCallback((open: boolean) => {
+    detailOpen.current = open;
+  }, []);
   // False once the page is on its way out. The leaving page stays mounted for
   // its exit animation, and meanwhile the new page scrolls the same Lenis
   // instance — without this, that scroll (and the leaving page drifting up)
@@ -719,7 +728,7 @@ export function ExperienceSection({
    */
   const seek = useCallback(
     (f: number) => {
-      if (!alive.current) return;
+      if (!alive.current || detailOpen.current) return;
       // Mid way in or out: the drag waits, the thumb catches up on its next move.
       if (busyKind.current === 'transition' && performance.now() < busyUntil.current) return;
       window.clearTimeout(queued.current);
@@ -747,7 +756,7 @@ export function ExperienceSection({
   const stepByRef = useRef<(dir: 1 | -1) => void>(() => {});
   const stepBy = useCallback(
     (dir: 1 | -1) => {
-      if (!alive.current) return;
+      if (!alive.current || detailOpen.current) return;
       const now = performance.now();
       if (now < busyUntil.current) {
         // A card move in flight: run this one as soon as it lands instead of
@@ -822,7 +831,14 @@ export function ExperienceSection({
     // Lenis doesn't handle keys, and the native key scroll would move the
     // container underneath the held page.
     const onKey = (e: KeyboardEvent) => {
-      if ((!captured.current && !endView.current) || e.defaultPrevented || e.altKey || e.ctrlKey || e.metaKey) {
+      if (
+        (!captured.current && !endView.current) ||
+        detailOpen.current ||
+        e.defaultPrevented ||
+        e.altKey ||
+        e.ctrlKey ||
+        e.metaKey
+      ) {
         return;
       }
       const target = e.target as HTMLElement | null;
@@ -877,6 +893,8 @@ export function ExperienceSection({
       // A hair over 1:1 so no sub-pixel seam shows at the screen's edges.
       coverX.set((document.documentElement.clientWidth / Math.max(box.offsetWidth, 1)) * 1.01);
       coverY.set((window.innerHeight / Math.max(box.offsetHeight, 1)) * 1.01);
+      boxW.set(box.offsetWidth);
+      boxH.set(box.offsetHeight);
       updateProgress();
     };
     measure();
@@ -888,7 +906,7 @@ export function ExperienceSection({
       window.removeEventListener('resize', measure);
     };
     // reduceMotion swaps the track in or out, so the refs change with it.
-  }, [coverX, coverY, updateProgress, reduceMotion]);
+  }, [coverX, coverY, boxW, boxH, updateProgress, reduceMotion]);
 
   // How grown the box actually is: grown by the way in, undone again by the
   // way out past the last card.
@@ -920,10 +938,48 @@ export function ExperienceSection({
     const r = BOX_RADIUS * (1 - p);
     return `${r / sx}px / ${r / sy}px`;
   });
-  // The fly-through fades in over the last stretch of the growth, and is taken
-  // out of hit-testing entirely while invisible so it can't swallow clicks.
-  const depthOpacity = useTransform(growth, [0.85, 1], [0, 1]);
-  const depthVisibility = useTransform(depthOpacity, o => (o < 0.01 ? 'hidden' : 'visible'));
+  // The fly-through is always drawn, but clipped to the box as it is on screen,
+  // so the box is a window onto the space from the start instead of a black
+  // slab. In the fly-through's own coordinates (viewport-sized, offset up by
+  // stickyTop) the box sits at stickyTop, centred, scaled about its centre.
+  const depthClip = useTransform(
+    [stickyTop, boxW, boxH, boxScaleX, boxScaleY, eased],
+    ([top, w, h, sx, sy, p]: number[]) => {
+      const cy = top + h / 2;
+      const halfH = (h * sy) / 2;
+      const r = BOX_RADIUS * (1 - p);
+      return `inset(${Math.max(0, cy - halfH)}px max(0px, calc(50% - ${(w * sx) / 2}px)) max(0px, calc(100% - ${cy + halfH}px)) round ${r}px)`;
+    }
+  );
+  // The progress dots only take clicks once the box has (nearly) filled the
+  // screen; before that the section isn't driving the fly-through yet.
+  const depthPointer = useTransform(growth, g => (g > 0.85 ? 'auto' : 'none'));
+  // The small box, on the way in and at the end, shows only the space and its
+  // ship: the cards fade in over the second half of the growth and out early
+  // in the shrink. `growth` covers both directions, as for the dots below.
+  const cardsOpacity = useTransform(growth, [0.55, 0.9], [0, 1]);
+  // As they fade in, the cards also rise from below and scale up into place,
+  // easing out over the second half of the growth (and sinking back on the
+  // way out), so they arrive rather than pop in.
+  const cardsReveal = useTransform(growth, g => {
+    const t = Math.min(1, Math.max(0, (g - 0.5) / 0.5));
+    return 1 - (1 - t) ** 3;
+  });
+  const cardsY = useTransform(cardsReveal, r => `${(1 - r) * 160}px`);
+  const cardsScale = useTransform(cardsReveal, r => 0.82 + 0.18 * r);
+  // The progress dots only belong to the full-screen fly-through: they fade in
+  // over the last of the growth and out again as soon as the box shrinks, so
+  // neither the small box on the way in nor the end view shows them. `growth`
+  // already falls back to 0 on the way out, so one range covers both.
+  const dotsOpacity = useTransform(growth, [0.85, 1], [0, 1]);
+  // The fly-through is drawn centred on the screen, but at the end the box
+  // slides down off the centre; this keeps the scene centred on the box
+  // instead, so its cards stay in the middle of the window as it shrinks.
+  // Zero while the box is pinned centred, which is all of the way in.
+  const depthShift = useTransform(
+    [stickyTop, boxH],
+    ([t, h]: number[]) => t + h / 2 - window.innerHeight / 2
+  );
 
   const rise = (delay: number, active = isInView, distance = RISE_DISTANCE) => ({
     initial: { y: reduceMotion ? 0 : distance, opacity: 0 },
@@ -1031,7 +1087,7 @@ export function ExperienceSection({
                   unevenly to fit the screen's aspect ratio costs nothing. */}
               <motion.div
                 aria-hidden="true"
-                className="absolute inset-0 bg-black will-change-transform"
+                className="absolute inset-0 bg-[#07090c] will-change-transform"
                 style={{ scaleX: boxScaleX, scaleY: boxScaleY, borderRadius: boxRadius }}
               />
             </motion.div>
@@ -1047,18 +1103,27 @@ export function ExperienceSection({
                 top: depthTop,
                 left: 'calc(50% - 50vw)',
                 height: '100vh',
-                opacity: depthOpacity,
-                visibility: depthVisibility
+                clipPath: depthClip,
+                ['--depth-pointer' as string]: depthPointer,
+                ['--cards-opacity' as string]: cardsOpacity,
+                ['--cards-y' as string]: cardsY,
+                ['--cards-scale' as string]: cardsScale,
+                ['--dots-opacity' as string]: dotsOpacity
               }}
             >
-              <ExperienceDepth
-                className="absolute inset-0"
-                experiences={experiences}
-                label={label}
-                step={step}
-                onSelect={goTo}
-                intro={intro}
-              />
+              {/* Shifted, not the wrapper: the wrapper's clip is worked out in
+                  its own coordinates and must stay put. */}
+              <motion.div className="absolute inset-0" style={{ y: depthShift }}>
+                <ExperienceDepth
+                  className="absolute inset-0"
+                  experiences={experiences}
+                  label={label}
+                  step={step}
+                  onSelect={goTo}
+                  intro={intro}
+                  onDetailChange={onDetailChange}
+                />
+              </motion.div>
             </motion.div>
 
             {/* Leaving the page with the box full screen: the page transition
@@ -1070,7 +1135,7 @@ export function ExperienceSection({
             {!isPresent && (
               <motion.div
                 aria-hidden="true"
-                className="pointer-events-none absolute w-screen bg-black"
+                className="pointer-events-none absolute w-screen bg-[#07090c]"
                 style={{
                   top: belowScreenTop,
                   left: 'calc(50% - 50vw)',

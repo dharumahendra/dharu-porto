@@ -12,7 +12,9 @@ import { ExperienceSection } from './components/ExperienceSection';
 import { CustomScrollbar } from './components/CustomScrollbar';
 // Two footer designs are kept; swap the import to Footer1 for the navy one.
 import { Footer2 as FooterSection } from './components/Footer2';
+import { LoadingScreen } from './components/LoadingScreen';
 import { pageEase, pageEaseCss, timeAtProgress } from './lib/page-ease';
+import { isInitialLoad, trackLoad } from './lib/preload';
 
 // Pulls Three.js (~600 KB raw) into its own chunk so it no longer blocks first
 // paint. The overlay is decorative, so it can arrive a beat after the content.
@@ -289,7 +291,9 @@ const MotionPage = forwardRef<HTMLDivElement, { children: React.ReactNode, pathn
  * or touch — or for the browser to go idle, so it is usually warm by then.
  */
 function useFluidReady() {
-  const [ready, setReady] = useState(false);
+  // While the loading screen is up it boots straight away instead: its cost is
+  // hidden behind the screen there, rather than landing on the first scroll.
+  const [ready, setReady] = useState(isInitialLoad);
 
   useEffect(() => {
     if (ready) return;
@@ -313,9 +317,31 @@ function useFluidReady() {
   return ready;
 }
 
+/**
+ * Holds the loading screen until the fluid overlay is up: claimed on the first
+ * render, released a couple of frames after the lazy chunk has mounted (its
+ * WebGL set-up runs in its effects, which have run by then).
+ */
+function useFluidPreload() {
+  const [release] = useState(() => (isInitialLoad() ? trackLoad() : null));
+  return release;
+}
+
+function FluidMounted({ onMounted }: { onMounted: (() => void) | null }) {
+  useEffect(() => {
+    if (!onMounted) return;
+    let raf = requestAnimationFrame(() => {
+      raf = requestAnimationFrame(onMounted);
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [onMounted]);
+  return null;
+}
+
 export function App() {
   const location = useLocation();
   const fluidReady = useFluidReady();
+  const releaseFluid = useFluidPreload();
 
   return (
     <>
@@ -373,6 +399,8 @@ export function App() {
           <FooterSection />
         </MotionPage>
       </AnimatePresence>
+      {/* After the pages, so their effects claim their load tasks first. */}
+      <LoadingScreen />
     </ReactLenis>
 
     {/* Sibling of the scroll container, not a child: keeps the fluid pinned to
@@ -380,6 +408,7 @@ export function App() {
     {fluidReady && (
       <Suspense fallback={null}>
         <LiquidEtherOverlay />
+        <FluidMounted onMounted={releaseFluid} />
       </Suspense>
     )}
     </>

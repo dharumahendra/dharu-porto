@@ -1,6 +1,6 @@
 import { motion, useInView } from 'framer-motion';
 import { useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { ProjectCard, type ProjectCardProps } from './ProjectCard';
+import { ProjectCardStacked, type ProjectCardStackedProps } from './ProjectCardStacked';
 import { ScrollReveal, useScrollReveal } from './ScrollReveal';
 
 // Headline entrance: each wrapped line rises into place in turn and, while
@@ -64,7 +64,7 @@ const DEFAULT_HEADLINE: HeadlineSegment[] = [
 
 // Placeholder content — swap `src`/`title`/`stack` as real project work lands.
 // Add `href` to a project to make its card a link.
-const PROJECTS: ProjectCardProps[] = [
+const PROJECTS: ProjectCardStackedProps[] = [
   { title: 'Themis', stack: ['TypeScript', 'Java', 'PostgreSQL'], src: '/placeholder-1.jpg', alt: 'Placeholder project one' },
   { title: 'AEVA Team', stack: ['TypeScript', 'Java', 'PostgreSQL'], src: '/placeholder-2.jpg', alt: 'Placeholder project two' },
   { title: 'CHR Innovations', stack: ['TypeScript', 'Java', 'PostgreSQL'], src: '/placeholder-3.jpg', alt: 'Placeholder project three' },
@@ -108,7 +108,7 @@ function useTwoColumns() {
 }
 
 interface RevealCardProps {
-  project: ProjectCardProps;
+  project: ProjectCardStackedProps;
   pivot: string;
   tilt: number;
   delay: number;
@@ -153,7 +153,7 @@ function RevealCard({ project, pivot, tilt, delay }: RevealCardProps) {
             { duration: 0 }
       }
     >
-      <ProjectCard {...project} />
+      <ProjectCardStacked {...project} />
     </motion.div>
   );
 }

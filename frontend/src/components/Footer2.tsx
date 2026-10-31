@@ -3,25 +3,9 @@ import { motion, useInView, useIsPresent, useReducedMotion } from 'framer-motion
 import { ArrowRightIcon, ArrowUpIcon, GithubIcon, InstagramIcon, LinkedinIcon } from 'lucide-react';
 import { useLenis } from 'lenis/react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { CONTACT_EMAIL, SOCIAL_LINKS, type SocialKind } from '../data/contact';
+import { SOCIAL_LINKS, type SocialKind } from '../data/contact';
 
 const INK = '#10171c';
-
-// The pages themselves are the pill buttons in the bar below, so the columns
-// only hold what those don't: the work by discipline, and a direct line.
-const COLUMNS: { title: string; links: { label: string; to?: string; href?: string }[] }[] = [
-  {
-    title: 'Services',
-    links: [
-      { label: 'Design', to: '/projects' },
-      { label: 'Development', to: '/projects' }
-    ]
-  },
-  {
-    title: 'Email me',
-    links: [{ label: CONTACT_EMAIL, href: `mailto:${CONTACT_EMAIL}` }]
-  }
-];
 
 // The bar under the card: one pill per page except the one you're on, and
 // the way back up.
@@ -80,13 +64,9 @@ function SocialIcon({ kind }: { kind: SocialKind }) {
   }
 }
 
-const LINK_CLASS =
-  'rounded text-sm text-[#3a4048] outline-none transition-colors hover:text-[#10171c] focus-visible:ring-2 focus-visible:ring-[#10171c]';
-
 /**
- * Footer2 — a quiet, light alternative to Footer1: one white card holding the
- * name, a line about the work, the social icons and two link columns, with
- * the copyright row under a hairline; a dark bar tucked under it with a pill
+ * Footer2 — a quiet, light alternative to Footer1: one card with a centred
+ * headline, the disciplines, the social icons and the copyright; a dark bar tucked under it with a pill
  * for each of the other pages and "Go up"; below that the name set huge and faded, cut off by
  * the bottom of the page.
  */
@@ -155,62 +135,32 @@ export function Footer2() {
   return (
     <footer className="page-gutter relative w-full overflow-hidden bg-[#F5FAFF] pt-16 sm:pt-20">
       <div className="relative z-10 mx-auto w-full max-w-6xl rounded-[1.75rem]  bg-[#dfe6ed] px-6 py-10 sm:rounded-[2rem] sm:px-12 sm:py-12">
-        <div className="grid gap-12 lg:grid-cols-[1fr_auto] lg:gap-24">
-          <div>
-            {/* Same wordmark treatment as the navbar logo, at footer size. */}
-            <span
-              className="font-sans text-xl font-medium tracking-[0.15em] [-webkit-text-stroke:0.6px_#10171c]"
-              style={{ color: INK }}
-            >
-              dharu
-            </span>
-            <p className="mt-6 max-w-[46ch] font-sans text-sm leading-relaxed text-[#3a4048]">
-              I design and build brands and websites for teams who want their product to look as good as it
-              works, from the first sketch to the shipped page.
-            </p>
-            <ul className="mt-7 flex items-center gap-2">
-              {SOCIAL_LINKS.filter(link => link.kind !== 'email').map(link => (
-                <li key={link.kind}>
-                  <a
-                    href={link.href}
-                    aria-label={link.label}
-                    title={link.label}
-                    {...(link.href.startsWith('http') ? { target: '_blank', rel: 'noreferrer' } : {})}
-                    className="flex size-9 items-center justify-center rounded-full text-[#10171c] outline-none transition-colors hover:bg-[#10171c]/[0.06] focus-visible:ring-2 focus-visible:ring-[#10171c]"
-                  >
-                    <SocialIcon kind={link.kind} />
-                  </a>
-                </li>
-              ))}
-            </ul>
-          </div>
-
-          <div className="grid grid-cols-2 gap-10 sm:gap-16">
-            {COLUMNS.map(column => (
-              <div key={column.title}>
-                <p className="font-sans text-sm font-semibold text-[#10171c]">{column.title}</p>
-                <ul className="mt-5 flex flex-col gap-3">
-                  {column.links.map(link => (
-                    <li key={link.label}>
-                      {link.href ? (
-                        <a href={link.href} className={LINK_CLASS}>
-                          {link.label}
-                        </a>
-                      ) : (
-                        <button type="button" onClick={() => navigate(link.to!)} className={LINK_CLASS}>
-                          {link.label}
-                        </button>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-              </div>
+        <div className="flex flex-col items-center py-10 text-center sm:py-14">
+          <p
+            className="font-sans text-5xl font-normal leading-none tracking-tight sm:text-6xl lg:text-7xl"
+            style={{ color: INK }}
+          >
+            build some greater
+          </p>
+          <p className="mt-4 font-sans text-sm text-[#3a4048] sm:text-base">
+            Development | Devops | Data Engineer
+          </p>
+          <ul className="mt-8 flex items-center gap-4 px-6 py-4 sm:gap-6 sm:px-8 sm:py-5">
+            {SOCIAL_LINKS.filter(link => link.kind !== 'email').map(link => (
+              <li key={link.kind}>
+                <a
+                  href={link.href}
+                  aria-label={link.label}
+                  title={link.label}
+                  {...(link.href.startsWith('http') ? { target: '_blank', rel: 'noreferrer' } : {})}
+                  className="flex size-9 items-center justify-center rounded-full text-[#10171c] outline-none transition-colors hover:bg-[#10171c]/[0.06] focus-visible:ring-2 focus-visible:ring-[#10171c]"
+                >
+                  <SocialIcon kind={link.kind} />
+                </a>
+              </li>
             ))}
-          </div>
-        </div>
-
-        <div className="mt-12  pt-7 font-sans text-sm text-[#9aa6ad]">
-          © {year} dharu. All rights reserved.
+          </ul>
+          <p className="mt-10 font-sans text-sm text-[#3a4048]">©{year} dharu. All deverse better</p>
         </div>
       </div>
 

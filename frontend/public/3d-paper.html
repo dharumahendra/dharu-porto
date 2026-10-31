@@ -553,6 +553,11 @@ function boot(){
   renderer.compile(scene,camera); renderer.render(scene,camera);
   mat.opacity = 1;
   frame();
+  // Shaders are compiled and the first frame is drawn: tell the host, whose
+  // loading screen waits on this before letting the visitor scroll.
+  if (window.parent !== window) {
+    window.parent.postMessage({ type: "paper:ready" }, "*");
+  }
 }
 
 if(document.fonts && document.fonts.ready){

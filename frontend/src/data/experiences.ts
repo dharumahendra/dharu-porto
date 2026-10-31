@@ -9,6 +9,22 @@ export interface Experience {
   points: string[];
   /** Hex colour; the depth scene's glow shifts to it while this card is read. */
   accent: string;
+  /**
+   * The longer story, shown when the card is opened. Paragraphs are split on
+   * blank lines. Falls back to `summary` when left out.
+   */
+  description?: string;
+  /**
+   * Photos for the opened card, e.g. `{ src: '/experience/media-1.jpg', alt: '…' }`
+   * with the file in public/experience/. The first one is shown large. Left
+   * out (or empty), the card shows placeholder slots instead.
+   */
+  photos?: ExperiencePhoto[];
+}
+
+export interface ExperiencePhoto {
+  src: string;
+  alt: string;
 }
 
 // Example content only — every entry is marked "(Contoh)". Replace all six with

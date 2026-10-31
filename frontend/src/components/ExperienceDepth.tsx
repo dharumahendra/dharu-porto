@@ -1,8 +1,17 @@
 import gsap from 'gsap';
 import { useGSAP } from '@gsap/react';
-import type { MotionValue } from 'framer-motion';
-import { useRef, type CSSProperties } from 'react';
+import { AnimatePresence, type MotionValue } from 'framer-motion';
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import type { Experience } from '../data/experiences';
+import { CardFace, ExperienceDetail, type Box } from './ExperienceDetail';
+
+// The space is monochrome, in the site's own palette: ink for the void, a
+// pale ice blue for the nebulae, the trail and the ship's glow. No per-card
+// colour — the cards' `accent` no longer tints anything here.
+const SPACE_INK = '#07090c';
+const SPACE_TINT = '#a9c2d4';
+import type { SpaceScene } from './experience-space';
+import { isInitialLoad, trackLoad } from '../lib/preload';
 
 /*
  * Z-depth fly-through, ported from the z-depth-experience skill's reference
@@ -78,6 +87,8 @@ interface ExperienceDepthProps {
   onSelect: (i: number) => void;
   /** 0–1: the camera's fly-in to the current card, played by the host on a clock. */
   intro: MotionValue<number>;
+  /** Told when a card is opened, and again once it has fully closed. */
+  onDetailChange?: (open: boolean) => void;
   className?: string;
   style?: CSSProperties;
 }
@@ -88,17 +99,69 @@ export function ExperienceDepth({
   step,
   onSelect,
   intro,
+  onDetailChange,
   className = '',
   style
 }: ExperienceDepthProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
   const cardRefs = useRef<(HTMLElement | null)[]>([]);
   const ghostRefs = useRef<(HTMLDivElement | null)[]>([]);
   const dotRefs = useRef<(HTMLButtonElement | null)[]>([]);
 
   const n = experiences.length;
+
+  /* ---------- opening a card ---------- */
+  // The card the camera is at, mirrored out of the GSAP scope for click handling.
+  const activeRef = useRef(-1);
+  const [opened, setOpened] = useState<{
+    index: number;
+    from: Box;
+    cardWidth: number;
+    bounds: { w: number; h: number };
+  } | null>(null);
+  // The card that is hidden while the panel stands in for it; cleared only
+  // once the panel has shrunk all the way back, so the two never show at once.
+  const [hiddenCard, setHiddenCard] = useState<number | null>(null);
+
+  const openCard = useCallback(
+    (i: number) => {
+      const card = cardRefs.current[i];
+      const root = rootRef.current;
+      if (!card || !root) return;
+      // Only the card being read opens; any other is flown to first.
+      if (i !== activeRef.current) {
+        onSelect(i);
+        return;
+      }
+      const r = root.getBoundingClientRect();
+      const c = card.getBoundingClientRect();
+      setOpened({
+        index: i,
+        from: { x: c.left - r.left, y: c.top - r.top, w: c.width, h: c.height },
+        // Its laid-out width: the perspective draws it smaller than that, and
+        // the panel's copy of it must wrap its text exactly the same way.
+        cardWidth: card.offsetWidth,
+        bounds: { w: r.width, h: r.height }
+      });
+      setHiddenCard(i);
+      onDetailChange?.(true);
+    },
+    [onSelect, onDetailChange]
+  );
+  const closeCard = useCallback(() => setOpened(null), []);
+  const onClosed = useCallback(() => {
+    setHiddenCard(null);
+    onDetailChange?.(false);
+  }, [onDetailChange]);
+
+  // Toggled on the element rather than through className: the cards' classes
+  // are also flipped imperatively (is-active), and a re-render would wipe them.
+  useEffect(() => {
+    cardRefs.current.forEach((el, j) => el?.classList.toggle('is-expanded', j === hiddenCard));
+  }, [hiddenCard]);
 
   useGSAP(
     () => {
@@ -263,19 +326,49 @@ export function ExperienceDepth({
       const cam: Pose = { ...start };
       let active = -1;
 
+      /* ---------- the 3D space behind the cards ---------- */
+      // Three.js arrives in its own chunk; until then the plain black shows.
+      let space: SpaceScene | null = null;
+      let disposed = false;
+      let onScreen = false;
+      const spaceBounds = () => space?.setBounds(start.z, world[n - 1].z);
+      const syncRunning = () => space?.setRunning(onScreen && !document.hidden);
+      // Held by the loading screen on a fresh load, so the scene is compiled
+      // before anyone scrolls to it.
+      const releaseLoad = isInitialLoad() ? trackLoad() : () => {};
+      const loadTimeout = window.setTimeout(releaseLoad, 10000);
+      import('./experience-space')
+        .then(({ createSpaceScene }) => {
+          if (disposed || !canvasRef.current) return;
+          space = createSpaceScene(canvasRef.current, SPACE_TINT, SPACE_INK);
+          spaceBounds();
+          space.setCamera(cam);
+          syncRunning();
+          return space.ready;
+        })
+        .catch(() => {})
+        .finally(releaseLoad);
+      const visIO = new IntersectionObserver(entries => {
+        onScreen = entries[0].isIntersecting;
+        syncRunning();
+      });
+      visIO.observe(root);
+      document.addEventListener('visibilitychange', syncRunning);
+
       function setActive(i: number) {
         active = i;
+        activeRef.current = i;
         cardEls.forEach((el, j) => el.classList.toggle('is-active', j === i));
         dotRefs.current.forEach((el, j) => {
           el?.classList.toggle('is-active', j === i);
           if (el) el.setAttribute('aria-current', j === i ? 'step' : 'false');
         });
-        gsap.to(root, { '--accent': experiences[i].accent, duration: 0.6, overwrite: true });
-      }
+        gsap.to(root, { '--accent': experiences[i].accent, duration: 0.6, overwrite: true });      }
 
       function render() {
         // Moving the world by the inverse of the camera = the viewer flies forward.
         scene!.style.transform = `rotateY(${-cam.ry}deg) translate3d(${-cam.x}px, ${-cam.y}px, ${-cam.z}px)`;
+        space?.setCamera(cam);
 
         const s = Math.sin(cam.ry * DEG);
         const co = Math.cos(cam.ry * DEG);
@@ -358,6 +451,7 @@ export function ExperienceDepth({
       /* ---------- relayout on resize and once web fonts settle ---------- */
       const relayout = () => {
         computeLayout();
+        spaceBounds();
         gsap.killTweensOf(focus);
         Object.assign(focus, rests[current]);
         sync();
@@ -383,6 +477,12 @@ export function ExperienceDepth({
       }
 
       return () => {
+        disposed = true;
+        visIO.disconnect();
+        document.removeEventListener('visibilitychange', syncRunning);
+        window.clearTimeout(loadTimeout);
+        releaseLoad();
+        space?.dispose();
         unsubscribe();
         stopIntro();
         gsap.killTweensOf(focus);
@@ -400,15 +500,25 @@ export function ExperienceDepth({
       style={
         {
           '--accent': experiences[0]?.accent,
-          background:
-            'radial-gradient(120% 90% at 50% 50%, color-mix(in oklab, var(--accent) 16%, #000) 0%, #000 70%)',
+          background: SPACE_INK,
           ...style
         } as CSSProperties
       }
       aria-label={label}
       role="region"
     >
-      <div ref={viewportRef} className="absolute inset-0" style={{ perspectiveOrigin: '50% 50%' }}>
+      {/* Stars, nebulae and the ship (experience-space.ts), behind the cards. */}
+      <canvas ref={canvasRef} aria-hidden="true" className="pointer-events-none absolute inset-0 h-full w-full" />
+      {/* --cards-opacity, --cards-y, --cards-scale: the host fades the cards in
+          (rising from below and scaling up) as the box grows, and out again on
+          the way out. Set here, on the perspective container, and not below
+          it: opacity or transforms between here and the cards would flatten
+          the 3D. */}
+      <div
+        ref={viewportRef}
+        className="absolute inset-0 [opacity:var(--cards-opacity,1)] [transform:translateY(var(--cards-y,0px))_scale(var(--cards-scale,1))]"
+        style={{ perspectiveOrigin: '50% 50%' }}
+      >
         {/* 0×0 at the viewport centre, so its origin is the camera's eye line.
             Nothing between here and the cards may set overflow, filter,
             opacity or clip-path — any of them flattens the 3D. */}
@@ -417,48 +527,21 @@ export function ExperienceDepth({
           className="absolute left-1/2 top-1/2 h-0 w-0 will-change-transform"
           style={{ transformStyle: 'preserve-3d' }}
         >
-          {/* Ghost cards: outlines only, so they read as depth, never as content. */}
-          {Array.from({ length: CONFIG.ghosts }, (_, j) => {
-            const exp = experiences[j % n];
-            const kind = j % 3;
-            return (
-              <div
-                key={`ghost-${j}`}
-                ref={el => {
-                  ghostRefs.current[j] = el;
-                }}
-                aria-hidden="true"
-                className="pointer-events-none absolute left-0 top-0 flex aspect-[4/3] flex-col justify-between rounded-2xl border border-white/10 p-4 will-change-[transform,opacity]"
-                style={{
-                  width: `min(${Math.round(170 + rand(j + 40) * 150)}px, 52vw)`,
-                  backfaceVisibility: 'hidden'
-                }}
-              >
-                {kind === 0 && (
-                  <>
-                    <span className="font-sans text-xs text-white/40">{exp.period}</span>
-                    <strong className="font-sans text-2xl font-semibold tracking-[-0.03em] text-white/50">
-                      {exp.period.slice(0, 4)}
-                    </strong>
-                  </>
-                )}
-                {kind === 1 && (
-                  <>
-                    <span className="font-sans text-xs tabular-nums text-white/40">{pad((j % n) + 1)}</span>
-                    <strong className="font-sans text-xl font-semibold leading-tight tracking-[-0.02em] text-white/50">
-                      {exp.org.split('(')[0].trim()}
-                    </strong>
-                  </>
-                )}
-                {kind === 2 && (
-                  <>
-                    <span />
-                    <i className="block h-[3px] w-2/5 rounded-full" style={{ background: exp.accent }} />
-                  </>
-                )}
-              </div>
-            );
-          })}
+          {/* Ghost cards: bare outlines, so they read as depth, never as content. */}
+          {Array.from({ length: CONFIG.ghosts }, (_, j) => (
+            <div
+              key={`ghost-${j}`}
+              ref={el => {
+                ghostRefs.current[j] = el;
+              }}
+              aria-hidden="true"
+              className="pointer-events-none absolute left-0 top-0 aspect-[4/3] rounded-2xl border border-white/10 will-change-[transform,opacity]"
+              style={{
+                width: `min(${Math.round(170 + rand(j + 40) * 150)}px, 52vw)`,
+                backfaceVisibility: 'hidden'
+              }}
+            />
+          ))}
 
           {experiences.map((exp, i) => (
             <article
@@ -466,36 +549,23 @@ export function ExperienceDepth({
               ref={el => {
                 cardRefs.current[i] = el;
               }}
-              className="group absolute left-0 top-0 w-[min(440px,82vw)] rounded-[20px] bg-[#F5FAFF] p-[clamp(20px,3vw,32px)] text-[#10171c] will-change-[transform,opacity]"
+              // A ticket of the site's paper: see .mission-card in index.css.
+              // Clickable only once the host lets the fly-through take input
+              // (--depth-pointer).
+              className="mission-card group absolute left-0 top-0 w-[min(440px,82vw)] cursor-pointer rounded-[24px] outline-none will-change-[transform,opacity] [pointer-events:var(--depth-pointer,auto)] focus-visible:ring-2 focus-visible:ring-white/70"
               style={{ backfaceVisibility: 'hidden' }}
+              role="button"
+              tabIndex={0}
+              aria-label={`${exp.role}, ${exp.org}: open details`}
+              onClick={() => openCard(i)}
+              onKeyDown={e => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  openCard(i);
+                }
+              }}
             >
-              <div className="flex items-baseline justify-between gap-3 font-sans text-sm text-[#9aa6ad]">
-                <span className="tabular-nums" style={{ color: exp.accent }}>
-                  {pad(i + 1)}
-                </span>
-                <span>{exp.period}</span>
-              </div>
-              <h3 className="mt-4 font-sans text-[clamp(1.5rem,3.2vw,2.1rem)] font-semibold leading-[1.06] tracking-[-0.03em]">
-                {exp.role}
-              </h3>
-              <p className="mt-1 font-sans text-[#3a4048]">{exp.org}</p>
-              <p className="mt-4 font-sans leading-relaxed text-[#3a4048]">{exp.summary}</p>
-              <ul className="mt-4 grid gap-2">
-                {exp.points.map((point, j) => (
-                  <li
-                    key={point}
-                    className="relative translate-y-2.5 pl-5 font-sans text-[0.95rem] leading-snug opacity-0 transition-[opacity,transform] duration-[450ms] ease-out group-[.is-active]:translate-y-0 group-[.is-active]:opacity-100"
-                    style={{ transitionDelay: `${j * 80}ms` }}
-                  >
-                    <span
-                      aria-hidden="true"
-                      className="absolute left-0 top-[0.65em] h-0.5 w-2"
-                      style={{ background: exp.accent }}
-                    />
-                    {point}
-                  </li>
-                ))}
-              </ul>
+              <CardFace experience={exp} index={i} total={n} />
             </article>
           ))}
         </div>
@@ -508,7 +578,9 @@ export function ExperienceDepth({
 
       <nav
         aria-label="Jump to an experience"
-        className="page-gutter pointer-events-auto absolute right-0 top-1/2 grid -translate-y-1/2 gap-3"
+        // The host shows the dots only while the fly-through fills the screen
+        // (--dots-opacity), and takes them out of hit-testing otherwise.
+        className="page-gutter absolute right-0 top-1/2 grid -translate-y-1/2 gap-3 [opacity:var(--dots-opacity,1)] [pointer-events:var(--depth-pointer,auto)]"
       >
         {experiences.map((exp, i) => (
           <button
@@ -519,10 +591,25 @@ export function ExperienceDepth({
             type="button"
             aria-label={`${exp.role}, ${exp.org}`}
             onClick={() => onSelect(i)}
-            className="size-2.5 rounded-full border border-white/40 transition-[transform,background-color,border-color] duration-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[3px] focus-visible:outline-white [&.is-active]:scale-[1.4] [&.is-active]:border-[var(--accent)] [&.is-active]:bg-[var(--accent)]"
+            className="size-2.5 rounded-full border border-white/40 transition-[transform,background-color,border-color] duration-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[3px] focus-visible:outline-white [&.is-active]:scale-[1.4] [&.is-active]:border-[#F5FAFF] [&.is-active]:bg-[#F5FAFF]"
           />
         ))}
       </nav>
+
+      <AnimatePresence onExitComplete={onClosed}>
+        {opened && (
+          <ExperienceDetail
+            key={opened.index}
+            experience={experiences[opened.index]}
+            index={opened.index}
+            from={opened.from}
+            cardWidth={opened.cardWidth}
+            total={n}
+            bounds={opened.bounds}
+            onClose={closeCard}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }

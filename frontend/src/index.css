@@ -121,3 +121,112 @@ body {
   scrollbar-width: none; /* Firefox */
   -ms-overflow-style: none; /* IE/Edge */
 }
+
+
+/* Mission card: the experience fly-through's cards, as tickets of the site's
+   own paper. Solid and matte like the navbar pills: no blur, sheen or
+   coloured glow. Two halves, the body and the stub, each with half-circle
+   notches cut where they meet, and a perforation line between them.
+   The notches are masks on the halves, not on the card: the card itself is a
+   3D-transformed element and must stay unmasked. */
+.mission-card {
+  /* No `position` here: it would override the card's own `absolute` (this
+     file comes after Tailwind's utilities) and knock it off its 3D anchor. */
+  --notch: 11px;
+  --card-radius: 24px;
+  color: #10171c;
+}
+.mission-card__body,
+.mission-card__stub {
+  background: #f5faff;
+}
+.mission-card__body {
+  border-radius: var(--card-radius) var(--card-radius) 0 0;
+  -webkit-mask:
+    radial-gradient(circle var(--notch) at 0 100%, #0000 98%, #000) left / 51% 100% no-repeat,
+    radial-gradient(circle var(--notch) at 100% 100%, #0000 98%, #000) right / 51% 100% no-repeat;
+  mask:
+    radial-gradient(circle var(--notch) at 0 100%, #0000 98%, #000) left / 51% 100% no-repeat,
+    radial-gradient(circle var(--notch) at 100% 100%, #0000 98%, #000) right / 51% 100% no-repeat;
+}
+.mission-card__stub {
+  position: relative;
+  border-radius: 0 0 var(--card-radius) var(--card-radius);
+  -webkit-mask:
+    radial-gradient(circle var(--notch) at 0 0, #0000 98%, #000) left / 51% 100% no-repeat,
+    radial-gradient(circle var(--notch) at 100% 0, #0000 98%, #000) right / 51% 100% no-repeat;
+  mask:
+    radial-gradient(circle var(--notch) at 0 0, #0000 98%, #000) left / 51% 100% no-repeat,
+    radial-gradient(circle var(--notch) at 100% 0, #0000 98%, #000) right / 51% 100% no-repeat;
+}
+/* The perforation, running between the notches. */
+.mission-card__stub::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: calc(var(--notch) + 8px);
+  right: calc(var(--notch) + 8px);
+  border-top: 2px dashed #cfd8de;
+}
+/* Hover (and keyboard focus): the ticket lifts a little and its pill does the
+   navbar buttons' hover, growing with the icon giving a small pulse. Only on
+   the fly-through's cards ([role=button]), not the copy in the opened panel.
+   The card's own transform is written every frame by the fly-through, so the
+   lift moves the two halves inside it instead. */
+.mission-card__body,
+.mission-card__stub {
+  transition: transform 0.5s cubic-bezier(0.32, 0.72, 0, 1);
+}
+.mission-card__pill {
+  transform-origin: right center;
+  transition:
+    transform 0.4s cubic-bezier(0.32, 0.72, 0, 1),
+    background-color 0.3s ease;
+}
+@media (hover: hover) {
+  .mission-card[role='button']:hover .mission-card__body,
+  .mission-card[role='button']:hover .mission-card__stub {
+    transform: translateY(-8px);
+  }
+  .mission-card[role='button']:hover .mission-card__pill {
+    transform: scale(1.1);
+    background-color: #d3dbe0;
+  }
+  .mission-card[role='button']:hover .mission-card__arrow {
+    animation: mission-card-pulse 0.7s ease-in-out;
+  }
+}
+.mission-card[role='button']:focus-visible .mission-card__body,
+.mission-card[role='button']:focus-visible .mission-card__stub {
+  transform: translateY(-8px);
+}
+.mission-card[role='button']:focus-visible .mission-card__pill {
+  transform: scale(1.1);
+  background-color: #d3dbe0;
+}
+@keyframes mission-card-pulse {
+  20% { transform: scale(0.8); }
+  40% { transform: scale(1.25); }
+  to { transform: scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mission-card__body,
+  .mission-card__stub,
+  .mission-card__pill {
+    transition: background-color 0.3s ease;
+  }
+  .mission-card[role='button'] .mission-card__body,
+  .mission-card[role='button'] .mission-card__stub,
+  .mission-card[role='button'] .mission-card__pill,
+  .mission-card[role='button'] .mission-card__arrow {
+    transform: none !important;
+    animation: none !important;
+  }
+}
+
+/* A card opened into its detail panel: the panel stands in for it. !important
+   because the fly-through writes opacity and visibility inline every frame. */
+.mission-card.is-expanded {
+  opacity: 0 !important;
+  visibility: hidden !important;
+}
